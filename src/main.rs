@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 use anyhow::Result;
+use biz_agent::workspace::Workspace;
 use clap::{Parser, Subcommand};
 
 #[derive(Debug, Parser)]
@@ -53,7 +54,8 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
         Commands::Init { workspace } => {
-            println!("初始化工作区: {}", workspace.display());
+            let workspace = Workspace::init(workspace)?;
+            println!("初始化工作区: {}", workspace.root().display());
         }
         Commands::Ingest {
             docs_dir,
