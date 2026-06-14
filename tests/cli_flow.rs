@@ -123,3 +123,40 @@ fn describe_image_dry_run_shows_hash_without_ai_call() {
         .stdout(predicates::str::contains("dry-run"))
         .stdout(predicates::str::contains("sha256="));
 }
+
+#[test]
+fn inspect_ai_lists_dry_run_image_audit_record() {
+    let workspace = tempfile::tempdir().unwrap();
+    let image_dir = tempfile::tempdir().unwrap();
+    let image = image_dir.path().join("diagram.png");
+    std::fs::write(&image, b"not a real png but enough for hashing").unwrap();
+
+    Command::cargo_bin("biz-agent")
+        .unwrap()
+        .args(["init", workspace.path().to_str().unwrap()])
+        .assert()
+        .success();
+    Command::cargo_bin("biz-agent")
+        .unwrap()
+        .args([
+            "describe-image",
+            image.to_str().unwrap(),
+            "--workspace",
+            workspace.path().to_str().unwrap(),
+            "--dry-run-ai",
+        ])
+        .assert()
+        .success();
+
+    Command::cargo_bin("biz-agent")
+        .unwrap()
+        .args([
+            "inspect-ai",
+            "--workspace",
+            workspace.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("describe_image"))
+        .stdout(predicates::str::contains("dry_run"));
+}

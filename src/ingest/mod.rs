@@ -51,6 +51,13 @@ pub fn run_ingest(
 
 fn ingest_one(store: &MetadataStore, document: &DiscoveredDocument) -> Result<bool> {
     let document_id = stable_document_id(&document.path.to_string_lossy());
+    if store
+        .document_content_hash(&document_id)?
+        .is_some_and(|existing| existing == document.sha256)
+    {
+        return Ok(false);
+    }
+
     let extracted = extract_document_text(&document.path, &document.file_type)?;
     let record = DocumentRecord::new(
         &document_id,
@@ -61,6 +68,7 @@ fn ingest_one(store: &MetadataStore, document: &DiscoveredDocument) -> Result<bo
         "indexed",
     );
     store.upsert_document(&record)?;
+    store.delete_chunks_for_document(&document_id)?;
 
     if extracted.text.trim().is_empty() {
         return Ok(false);
@@ -80,4 +88,33 @@ fn sha256_text(text: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(text.as_bytes());
     format!("{:x}", hasher.finalize())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::store::MetadataStore;
+
+    #[test]
+    fn repeated_ingest_skips_unchanged_and_replaces_stale_chunks() {
+        let workspace = tempfile::tempdir().unwrap();
+        let docs = tempfile::tempdir().unwrap();
+        let file = docs.path().join("process.txt");
+        std::fs::write(&file, "旧审批").unwrap();
+
+        let first = run_ingest(workspace.path(), docs.path()).unwrap();
+        assert_eq!(first.indexed, 1);
+
+        let unchanged = run_ingest(workspace.path(), docs.path()).unwrap();
+        assert_eq!(unchanged.skipped, 1);
+
+        std::fs::write(&file, "新归档").unwrap();
+        let changed = run_ingest(workspace.path(), docs.path()).unwrap();
+        assert_eq!(changed.indexed, 1);
+
+        let store =
+            MetadataStore::open(Workspace::open(workspace.path()).metadata_db_path()).unwrap();
+        assert!(store.search_text("旧审批", 5).unwrap().is_empty());
+        assert_eq!(store.search_text("新归档", 5).unwrap().len(), 1);
+    }
 }

@@ -3,7 +3,7 @@ use std::path::Path;
 
 use anyhow::Result;
 use chrono::Utc;
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
 use sha2::{Digest, Sha256};
 
 #[derive(Debug)]
@@ -104,6 +104,29 @@ impl MetadataStore {
                 document.size_bytes,
                 document.ingest_status,
             ],
+        )?;
+        Ok(())
+    }
+
+    pub fn document_content_hash(&self, document_id: &str) -> Result<Option<String>> {
+        self.connection
+            .query_row(
+                "SELECT content_hash FROM documents WHERE id = ?1",
+                params![document_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(Into::into)
+    }
+
+    pub fn delete_chunks_for_document(&self, document_id: &str) -> Result<()> {
+        self.connection.execute(
+            "DELETE FROM chunks_fts WHERE document_id = ?1",
+            params![document_id],
+        )?;
+        self.connection.execute(
+            "DELETE FROM chunks WHERE document_id = ?1",
+            params![document_id],
         )?;
         Ok(())
     }
@@ -236,6 +259,82 @@ impl MetadataStore {
             })?;
         Ok(count as usize)
     }
+
+    pub fn insert_ai_call(&self, call: &AiCallRecord) -> Result<()> {
+        self.connection.execute(
+            "
+            INSERT INTO ai_calls (
+                id,
+                task_id,
+                provider,
+                model,
+                purpose,
+                input_hash,
+                output_hash,
+                token_estimate,
+                redaction_applied,
+                status
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+            ON CONFLICT(id) DO UPDATE SET
+                output_hash = excluded.output_hash,
+                token_estimate = excluded.token_estimate,
+                redaction_applied = excluded.redaction_applied,
+                status = excluded.status
+            ",
+            params![
+                call.id,
+                call.task_id,
+                call.provider,
+                call.model,
+                call.purpose,
+                call.input_hash,
+                call.output_hash,
+                call.token_estimate.map(i64::from),
+                i64::from(call.redaction_applied),
+                call.status,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn list_ai_calls(&self) -> Result<Vec<AiCallRecord>> {
+        let mut statement = self.connection.prepare(
+            "
+            SELECT
+                id,
+                task_id,
+                provider,
+                model,
+                purpose,
+                input_hash,
+                output_hash,
+                token_estimate,
+                redaction_applied,
+                status
+            FROM ai_calls
+            ORDER BY created_at, id
+            ",
+        )?;
+        let rows = statement.query_map([], |row| {
+            let token_estimate = row.get::<_, Option<i64>>(7)?;
+            Ok(AiCallRecord {
+                id: row.get(0)?,
+                task_id: row.get(1)?,
+                provider: row.get(2)?,
+                model: row.get(3)?,
+                purpose: row.get(4)?,
+                input_hash: row.get(5)?,
+                output_hash: row.get(6)?,
+                token_estimate: token_estimate.map(|value| value as u32),
+                redaction_applied: row.get::<_, i64>(8)? != 0,
+                status: row.get(9)?,
+            })
+        })?;
+
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(Into::into)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -288,6 +387,51 @@ pub struct SearchResult {
     pub document_path: String,
     pub snippet: String,
     pub score: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AiCallRecord {
+    pub id: String,
+    pub task_id: String,
+    pub provider: String,
+    pub model: String,
+    pub purpose: String,
+    pub input_hash: String,
+    pub output_hash: Option<String>,
+    pub token_estimate: Option<u32>,
+    pub redaction_applied: bool,
+    pub status: String,
+}
+
+impl AiCallRecord {
+    pub fn new(
+        provider: impl Into<String>,
+        model: impl Into<String>,
+        purpose: impl Into<String>,
+        input_hash: impl Into<String>,
+        status: impl Into<String>,
+    ) -> Self {
+        let provider = provider.into();
+        let model = model.into();
+        let purpose = purpose.into();
+        let input_hash = input_hash.into();
+        let status = status.into();
+        let id = sha256_text(&format!(
+            "{provider}|{model}|{purpose}|{input_hash}|{status}"
+        ));
+        Self {
+            id,
+            task_id: "describe-image".to_string(),
+            provider,
+            model,
+            purpose,
+            input_hash,
+            output_hash: None,
+            token_estimate: Some(0),
+            redaction_applied: false,
+            status,
+        }
+    }
 }
 
 fn sha256_text(text: &str) -> String {
@@ -374,5 +518,18 @@ mod tests {
         let results = store.search_text("准入", 5).unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].chunk_id, "chunk-1");
+    }
+
+    #[test]
+    fn stores_and_lists_ai_call_records() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = MetadataStore::open(dir.path().join("metadata.sqlite")).unwrap();
+        let record = AiCallRecord::new("mock", "mock-ai", "describe_image", "abc123", "dry_run");
+        store.insert_ai_call(&record).unwrap();
+
+        let calls = store.list_ai_calls().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].purpose, "describe_image");
+        assert_eq!(calls[0].status, "dry_run");
     }
 }

@@ -28,9 +28,12 @@ impl<P: AiProvider> QaEngine<P> {
     }
 
     pub fn answer(&self, store: &MetadataStore, question: &str) -> Result<QaAnswer> {
-        let mut results = store.search_text(question, 5)?;
+        let results = store.search_text(question, 5)?;
         if results.is_empty() {
-            results = store.list_chunks(5)?;
+            return Ok(QaAnswer {
+                answer: "未找到相关来源。".to_string(),
+                sources: Vec::new(),
+            });
         }
 
         let contexts = results
@@ -67,6 +70,7 @@ fn unique_sources(results: &[SearchResult]) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ai::{Answer, Embeddings, ImageInput, ImageUnderstanding, Summary};
     use crate::store::DocumentRecord;
 
     #[test]
@@ -95,5 +99,46 @@ mod tests {
                 .iter()
                 .any(|source| source.ends_with("process.txt"))
         );
+    }
+
+    #[test]
+    fn no_match_returns_no_sources_without_calling_ai() {
+        struct NoCallProvider;
+
+        impl AiProvider for NoCallProvider {
+            fn describe_image(
+                &self,
+                _image: &ImageInput,
+                _prompt: &str,
+            ) -> Result<ImageUnderstanding> {
+                panic!("AI should not be called for no-match questions")
+            }
+
+            fn summarize_chunks(&self, _chunks: &[AiTextChunk], _prompt: &str) -> Result<Summary> {
+                panic!("AI should not be called for no-match questions")
+            }
+
+            fn embed_texts(&self, _texts: &[String]) -> Result<Embeddings> {
+                panic!("AI should not be called for no-match questions")
+            }
+
+            fn answer(&self, _question: &str, _contexts: &[AiTextChunk]) -> Result<Answer> {
+                panic!("AI should not be called for no-match questions")
+            }
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = MetadataStore::open(dir.path().join("metadata.sqlite")).unwrap();
+        let doc = DocumentRecord::new_for_test("doc-1", "process.txt", "text/plain");
+        store.upsert_document(&doc).unwrap();
+        store
+            .insert_chunk("chunk-1", "doc-1", "text", "客户准入规则", None, None)
+            .unwrap();
+
+        let answer = QaEngine::new(NoCallProvider)
+            .answer(&store, "完全无关的问题")
+            .unwrap();
+        assert!(answer.sources.is_empty());
+        assert!(answer.answer.contains("未找到相关来源"));
     }
 }
