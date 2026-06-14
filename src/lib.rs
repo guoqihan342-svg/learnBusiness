@@ -1,3 +1,4 @@
+pub mod ai;
 pub mod config;
 pub mod discover;
 pub mod ingest;
