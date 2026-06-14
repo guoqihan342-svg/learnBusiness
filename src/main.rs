@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 use anyhow::Result;
+use biz_agent::ingest::run_ingest;
 use biz_agent::workspace::Workspace;
 use clap::{Parser, Subcommand};
 
@@ -61,10 +62,10 @@ fn main() -> Result<()> {
             docs_dir,
             workspace,
         } => {
+            let summary = run_ingest(&workspace, &docs_dir)?;
             println!(
-                "ingest 文档目录: {} -> {}",
-                docs_dir.display(),
-                workspace.display()
+                "ingest 完成: scanned={} indexed={} skipped={} warnings={}",
+                summary.scanned, summary.indexed, summary.skipped, summary.warnings
             );
         }
         Commands::Status { workspace } => {

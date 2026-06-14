@@ -221,6 +221,25 @@ impl DocumentRecord {
             ingest_status: "indexed".to_string(),
         }
     }
+
+    pub fn new(
+        id: impl Into<String>,
+        path: impl Into<String>,
+        file_type: impl Into<String>,
+        content_hash: impl Into<String>,
+        size_bytes: u64,
+        ingest_status: impl Into<String>,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            path: path.into(),
+            file_type: file_type.into(),
+            content_hash: content_hash.into(),
+            modified_at: Utc::now().to_rfc3339(),
+            size_bytes,
+            ingest_status: ingest_status.into(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
