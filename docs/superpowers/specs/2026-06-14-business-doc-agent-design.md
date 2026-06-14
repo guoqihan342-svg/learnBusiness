@@ -1,41 +1,41 @@
-# Business Document Understanding Agent Design
+# 业务文档理解 Agent 设计
 
-## Context
+## 背景
 
-The agent is for understanding business documents, not source code. The input is a local folder of business material that may include PDF, Word, PowerPoint, images, scanned pages, diagrams, tables, and mixed office exports.
+这个 agent 用来理解业务文档，而不是理解代码仓库。输入是一批本地业务资料，可能包含 PDF、Word、PowerPoint、图片、扫描页、流程图、表格、截图和混合 Office 导出文件。
 
-The system must be token-efficient, safe by default, fast enough for repeated local use, and extensible through AI providers, skills, and MCP servers. Rust is the implementation language.
+系统必须省 token、默认安全、适合重复本地运行，并且可以扩展 AI provider、skill 和 MCP server。实现语言使用 Rust。
 
-We reviewed `mainframecomputer/orchestra` as a reference. Its useful ideas are the `Task / Agent / Tool` abstractions, task-level orchestration, explicit task dependencies, MCP adapter shape, iteration limits, duplicate tool-call detection, model fallbacks, and event callbacks. Its document-processing coverage is limited, so this design uses Orchestra only as an orchestration reference, not as the document ingestion model.
+我们参考了 `mainframecomputer/orchestra`。它值得借鉴的是 `Task / Agent / Tool` 抽象、以任务为中心的编排、显式任务依赖、MCP adapter 形态、迭代上限、重复 tool call 检测、模型 fallback 和事件 callback。它不是文档处理框架，所以本设计只参考它的编排思想，不照搬它的文档解析方式。
 
-Reference:
+参考项目：
 
 - https://github.com/mainframecomputer/orchestra
 - https://github.com/mainframecomputer/orchestra/blob/main/packages/python/src/mainframe_orchestra/task.py
 - https://github.com/mainframecomputer/orchestra/blob/main/packages/python/src/mainframe_orchestra/orchestration.py
 - https://github.com/mainframecomputer/orchestra/blob/main/packages/python/src/mainframe_orchestra/adapters/mcp_adapter.py
 
-## Goals
+## 目标
 
-- Ingest a local folder of business documents.
-- Extract text, tables, images, slides, pages, and AI-generated image descriptions into traceable chunks.
-- Build a local index that supports keyword search, semantic search, citations, reporting, and question answering.
-- Use AI only when it adds value: image understanding, scanned-page understanding, complex table interpretation, summarization, report writing, and RAG answers.
-- Cache AI calls by stable content hash so repeated runs are cheap.
-- Support OpenAI-compatible multimodal and embedding APIs behind a provider trait.
-- Prepare extension points for MCP tools and business-domain skills.
-- Keep raw files local unless a configured AI or MCP call explicitly needs selected content.
+- 读取一个本地业务文档目录。
+- 把文本、表格、图片、页面、幻灯片和 AI 生成的图片说明抽取成可追溯的内容块。
+- 建立本地索引，支持关键词搜索、语义搜索、来源引用、报告生成和问答。
+- 只在有价值时调用 AI：图片理解、扫描页理解、复杂表格解释、摘要、报告生成和基于索引的问答。
+- 用稳定内容 hash 缓存 AI 调用，避免重复花 token。
+- 通过 provider trait 支持 OpenAI-compatible 多模态和 embedding API。
+- 为 MCP 工具和业务领域 skill 预留扩展点。
+- 默认让原始文件留在本地，除非某次配置过的 AI 或 MCP 调用明确需要发送选中的内容。
 
-## Non-Goals For First Version
+## 第一版不做什么
 
-- No full autonomous multi-agent free-form planning loop.
-- No mandatory external vector database.
-- No complete business knowledge graph.
-- No GUI.
-- No cloud document sync unless provided later through an MCP server.
-- No editing original business documents.
+- 不做完全自主的多 agent 自由规划循环。
+- 不强制依赖外部向量数据库。
+- 不做完整业务知识图谱。
+- 不做 GUI。
+- 不接云端文档同步，除非以后通过 MCP server 提供。
+- 不修改原始业务文档。
 
-## User-Facing Workflow
+## 用户工作流
 
 ```text
 biz-agent init <workspace>
@@ -46,23 +46,23 @@ biz-agent report --workspace <workspace> --out report.md
 biz-agent ask --workspace <workspace> "这个业务的核心流程是什么？"
 ```
 
-`init` creates the local workspace. `ingest` parses documents and builds indexes. `inspect-ai` shows queued or completed AI calls with reasons, hashes, estimated tokens, and redaction status. `report` generates a business understanding report from the index. `ask` answers with citations back to files, pages, slides, or extracted images.
+`init` 创建本地工作区。`ingest` 解析文档并建立索引。`inspect-ai` 展示待执行或已执行的 AI 调用，包括调用原因、hash、预估 token 和脱敏状态。`report` 从索引生成业务理解报告。`ask` 基于索引问答，并引用到文件、页码、幻灯片或抽取出来的图片。
 
-## High-Level Architecture
+## 总体架构
 
 ```text
-Business document folder
-  -> File discovery and hash scan
-  -> Format-specific extraction
-  -> Normalized content chunks
-  -> Local metadata, full-text, and vector indexes
-  -> Selective AI enrichment
-  -> Report and RAG question answering
+业务文档目录
+  -> 文件发现和 hash 扫描
+  -> 按格式抽取内容
+  -> 归一化内容块
+  -> 本地元数据索引、全文索引、向量索引
+  -> 选择性 AI 增强
+  -> 报告生成和 RAG 问答
 ```
 
-Rust owns orchestration, parsing, caching, indexing, safety checks, and CLI execution. AI providers are tools, not the source of truth. The source of truth is the local normalized chunk store plus indexes.
+Rust 负责调度、解析、缓存、索引、安全检查和 CLI。AI provider 是工具，不是事实来源。事实来源是本地归一化内容块和索引。
 
-## Workspace Layout
+## 工作区布局
 
 ```text
 .agent-index/
@@ -82,9 +82,9 @@ Rust owns orchestration, parsing, caching, indexing, safety checks, and CLI exec
     ai.jsonl
 ```
 
-`metadata.sqlite` stores documents, chunks, tasks, AI call records, and citations. `fulltext` stores text-search state. `vectors` stores embeddings and vector metadata. `artifacts` stores extracted page images, embedded document images, and rendered slide/page snapshots when needed.
+`metadata.sqlite` 保存 documents、chunks、tasks、AI 调用记录和引用信息。`fulltext` 保存全文搜索状态。`vectors` 保存 embedding 和向量元数据。`artifacts` 保存抽取出的页面图片、文档内嵌图片，以及必要时渲染出的页面或幻灯片快照。
 
-## Data Model
+## 数据模型
 
 ```text
 Document
@@ -129,72 +129,72 @@ Citation
   source_range
 ```
 
-Every generated report section or answer should be able to cite one or more `Chunk` records. AI-generated chunks are marked explicitly so downstream answers can distinguish source text from interpretation.
+报告里的每个关键结论和问答里的每个答案都应该能引用一个或多个 `Chunk`。AI 生成的 chunk 必须显式标记，方便下游区分原始资料和模型推断。
 
-## Indexing Strategy
+## 索引策略
 
-The first version builds three indexes:
+第一版建立三层索引：
 
-- Metadata index in SQLite for documents, chunks, hashes, task state, and citations.
-- Full-text index for exact search over extracted text, OCR text, table text, and AI image descriptions.
-- Vector index for semantic retrieval over text chunks, image descriptions, page summaries, slide summaries, and document summaries.
+- SQLite 元数据索引：保存文档、内容块、hash、任务状态和引用信息。
+- 全文索引：搜索抽取文本、OCR 文本、表格文本和 AI 生成的图片说明。
+- 向量索引：对文本块、图片说明、页面摘要、幻灯片摘要和文档摘要做语义检索。
 
-The retrieval path for `ask` is hybrid:
+`ask` 的检索路径采用混合检索：
 
 ```text
-question
-  -> keyword search candidates
-  -> vector search candidates
-  -> metadata filters and dedupe
-  -> top-k context pack
-  -> AI answer with citations
+问题
+  -> 关键词候选
+  -> 向量候选
+  -> 元数据过滤和去重
+  -> top-k 上下文包
+  -> AI 生成带引用答案
 ```
 
-This avoids relying only on vector search and keeps answers traceable.
+这样不会只依赖向量搜索，答案也更容易追溯来源。
 
-## Document Extraction
+## 文档抽取
 
-PDF handling:
+PDF 处理：
 
-- Extract embedded text when available.
-- Render selected pages to images when page text is missing, low confidence, or contains important diagrams.
-- Extract images when feasible and attach them to page-level chunks.
+- 优先抽取 PDF 内嵌文本。
+- 如果页面没有文本、置信度低，或包含重要图示，则把选中的页面渲染为图片。
+- 能抽取图片时，把图片挂到对应页面级 chunk 上。
 
-Word handling:
+Word 处理：
 
-- Extract paragraphs, headings, tables, and embedded images.
-- Preserve document order and section hierarchy where available.
+- 抽取段落、标题、表格和内嵌图片。
+- 尽量保留文档顺序和章节层级。
 
-PowerPoint handling:
+PowerPoint 处理：
 
-- Extract slide text, speaker notes if available, tables, and embedded images.
-- Render slide snapshots for multimodal analysis when the slide has diagrams, charts, or sparse text.
+- 抽取幻灯片文本、备注、表格和内嵌图片。
+- 对包含图示、图表或文本很少的幻灯片生成快照，交给多模态模型分析。
 
-Image handling:
+图片处理：
 
-- Store the original image artifact.
-- Generate an AI image description only when the image is referenced by a document chunk, likely contains business meaning, or is explicitly requested.
+- 保存原始图片 artifact。
+- 只有当图片被文档引用、可能包含业务含义，或用户明确请求时，才生成 AI 图片说明。
 
-The parser layer may use Rust libraries first and external converters where needed. External tools must be capability-checked at startup and reported clearly in `status`.
+解析层优先使用 Rust 库，必要时再调用外部转换器。外部工具需要在启动或 `status` 中做能力检测，并给出清晰诊断。
 
-## AI Strategy
+## AI 策略
 
-AI calls are selective and cached.
+AI 调用必须选择性执行，并且必须缓存。
 
-Use AI for:
+适合使用 AI 的场景：
 
-- Describing diagrams, process flows, architecture diagrams, org charts, screenshots, scanned pages, and complex tables.
-- Summarizing chunk groups into page, document, and corpus summaries.
-- Generating the final business understanding report.
-- Answering questions from retrieved context.
+- 描述流程图、架构图、组织结构图、截图、扫描页和复杂表格。
+- 把 chunk 组合摘要成页面摘要、文档摘要和资料集摘要。
+- 生成最终业务理解报告。
+- 基于检索到的上下文回答问题。
 
-Avoid AI for:
+不适合使用 AI 的场景：
 
-- Text extraction that can be done locally.
-- Reprocessing unchanged files.
-- Sending whole documents when only selected chunks are needed.
+- 本地可以完成的普通文本抽取。
+- 重复处理没有变化的文件。
+- 只需要少量 chunk 时发送整份文档。
 
-Provider interface:
+Provider 接口：
 
 ```text
 AiProvider
@@ -204,33 +204,33 @@ AiProvider
   answer(question, contexts) -> Answer
 ```
 
-The first provider should target OpenAI-compatible HTTP APIs with configurable `base_url`, `api_key`, model names, timeouts, and retry policy. The interface should allow later Azure OpenAI, local model gateways, and enterprise AI gateways.
+第一版 provider 面向 OpenAI-compatible HTTP API，支持配置 `base_url`、`api_key`、模型名、超时和重试策略。接口要允许后续接 Azure OpenAI、本地模型网关和企业 AI 网关。
 
-## Token Efficiency
+## Token 节省策略
 
-- Stable file and chunk hashes skip unchanged work.
-- AI cache key includes provider, model, purpose, prompt version, content hash, and redaction mode.
-- Ingest uses local parsing before AI enrichment.
-- Question answering sends only top-k retrieved chunks.
-- Report generation uses layered summaries rather than raw corpus stuffing.
-- Tool loops have explicit iteration limits.
-- Large AI outputs use structured JSON schemas to reduce retries and parsing ambiguity.
+- 文件和 chunk 使用稳定 hash，未变化内容跳过。
+- AI 缓存 key 包含 provider、model、purpose、prompt version、content hash 和 redaction mode。
+- Ingest 阶段先本地解析，再选择性 AI 增强。
+- 问答只发送 top-k 相关 chunk。
+- 报告生成使用分层摘要，不把整个资料集直接塞进上下文。
+- 工具循环设置明确迭代上限。
+- 大模型输出使用结构化 JSON schema，减少重试和解析歧义。
 
-## Safety
+## 安全策略
 
-The default behavior is local-first.
+默认 local-first。
 
-- Raw files stay local unless a selected AI or MCP tool call requires content.
-- `--dry-run-ai` shows what would be sent, why, and estimated size without making calls.
-- Local redaction masks obvious phone numbers, emails, identity numbers, bank-card-like numbers, and secret-like strings before external AI calls when enabled.
-- AI logs store hashes, model names, purpose, token estimates, status, and redaction status. They do not store full sensitive prompts by default.
-- MCP tools are disabled unless configured.
-- Each tool has an explicit permission class: `read_local`, `write_workspace`, `external_network`, `ai_external`, or `mcp_external`.
-- The CLI should fail closed when a tool requests a permission not granted by config.
+- 原始文件保留在本地，除非某个被允许的 AI 或 MCP 工具调用需要选中的内容。
+- `--dry-run-ai` 只展示将发送什么、为什么发送、预估大小，不真正调用外部 API。
+- 本地脱敏可以在外部 AI 调用前 mask 手机号、邮箱、身份证号、银行卡样式数字和密钥样式文本。
+- AI 日志默认只保存 hash、模型名、调用目的、token 估算、状态和脱敏状态，不保存完整敏感 prompt。
+- MCP 工具默认关闭，必须配置后才可用。
+- 每个工具都有明确权限类别：`read_local`、`write_workspace`、`external_network`、`ai_external`、`mcp_external`。
+- 当工具请求未授权权限时，CLI 默认拒绝执行。
 
-## Orchestration Model
+## 编排模型
 
-The design borrows Orchestra's task-centric model but makes it strongly typed and deterministic by default.
+设计借鉴 Orchestra 的任务中心模型，但在 Rust 中做成强类型，并且第一版默认确定性执行。
 
 ```text
 Task
@@ -257,88 +257,88 @@ Tool
   implementation: local | ai | mcp
 ```
 
-First-version agents:
+第一版内置 agent：
 
-- `ingest_agent`: document discovery, extraction, chunking, and artifact generation.
-- `vision_agent`: image, diagram, scanned-page, and slide-snapshot understanding.
-- `index_agent`: metadata, full-text, and vector index updates.
-- `report_agent`: business understanding report generation.
-- `qa_agent`: retrieval-augmented question answering.
+- `ingest_agent`：文档发现、抽取、切块和 artifact 生成。
+- `vision_agent`：图片、图示、扫描页和幻灯片快照理解。
+- `index_agent`：元数据、全文和向量索引更新。
+- `report_agent`：业务理解报告生成。
+- `qa_agent`：基于检索增强的问答。
 
-These agents are not free-roaming personas in the first version. They are typed execution units with bounded tools and explicit task inputs.
+这些 agent 在第一版不是自由行动的角色，而是有边界的强类型执行单元，有明确输入和允许工具。
 
-## MCP And Skill Extension Points
+## MCP 和 Skill 扩展点
 
-MCP support should follow the adapter shape seen in Orchestra:
+MCP 支持参考 Orchestra 的 adapter 形态：
 
-- Connect to stdio or SSE MCP servers.
-- List available tools.
-- Convert tool schemas into local typed tool descriptors.
-- Apply permission checks before any call.
-- Add optional metadata to tool calls, such as workspace id, tenant id, or trace id.
-- Close sessions and child processes predictably.
+- 连接 stdio 或 SSE MCP server。
+- 列出可用工具。
+- 把工具 schema 转换成本地强类型 tool descriptor。
+- 调用前执行权限检查。
+- 支持在工具调用中附加 workspace id、tenant id 或 trace id 等元数据。
+- 可预测地关闭 session 和子进程。
 
-Skills are domain templates, not executable trust boundaries. A skill can provide prompts, report sections, entity definitions, and domain question checklists such as "insurance business", "supply chain", or "financial risk". The engine still controls parsing, indexing, permissions, and AI calls.
+Skill 是领域模板，不是执行信任边界。Skill 可以提供 prompt、报告章节、实体定义和领域问题清单，例如“保险业务”“供应链业务”“金融风控”。解析、索引、权限和 AI 调用仍然由引擎控制。
 
-## Business Report Shape
+## 业务报告结构
 
-The first report should include:
+第一版报告包含：
 
-- Executive summary.
-- Document corpus overview.
-- Business domain and scope.
-- Key roles and stakeholders.
-- Core business objects.
-- Main business processes.
-- Business rules and constraints.
-- Systems, forms, data, and integration points mentioned in the documents.
-- Risks, ambiguities, and contradictions.
-- Open questions for domain experts.
-- Source citations.
+- 执行摘要。
+- 资料集概览。
+- 业务领域和范围。
+- 关键角色和干系人。
+- 核心业务对象。
+- 主要业务流程。
+- 业务规则和约束。
+- 文档中提到的系统、表单、数据和集成点。
+- 风险、歧义和矛盾。
+- 需要业务专家确认的问题。
+- 来源引用。
 
-The report should cite source chunks and clearly label AI-inferred statements.
+报告必须引用来源 chunk，并且清晰标记 AI 推断内容。
 
-## Error Handling
+## 错误处理
 
-- A single file failure records a warning and does not stop the whole ingest.
-- AI failures leave local extraction results intact and mark affected chunks as `needs_ai`.
-- Missing external converters are reported by `status` with install guidance.
-- Corrupt or password-protected files are skipped with clear diagnostics.
-- Invalid AI JSON responses are retried within the configured retry limit.
-- Repeated identical tool calls are stopped and recorded.
-- Max iteration and token budget exhaustion produce partial results instead of silent failure.
+- 单个文件失败只记录 warning，不中断整个 ingest。
+- AI 调用失败时保留本地抽取结果，并把相关 chunk 标记为 `needs_ai`。
+- 缺失外部转换器时由 `status` 报告，并给出安装建议。
+- 损坏或加密文件跳过，并给出清晰诊断。
+- AI 返回非法 JSON 时，在配置的重试上限内重试。
+- 重复相同工具调用时停止循环并记录。
+- 达到最大迭代数或 token budget 时输出部分结果，而不是静默失败。
 
-## Testing Strategy
+## 测试策略
 
-Unit tests:
+单元测试：
 
-- File hashing.
-- Chunk id stability.
-- Redaction.
-- AI cache key generation.
-- JSON schema parsing.
-- Permission checks.
-- Retrieval dedupe.
+- 文件 hash。
+- chunk id 稳定性。
+- 脱敏。
+- AI 缓存 key 生成。
+- JSON schema 解析。
+- 权限检查。
+- 检索去重。
 
-Integration tests:
+集成测试：
 
-- Small folder with PDF, DOCX, PPTX, PNG, and mixed extracted artifacts.
-- Ingest without AI.
-- Ingest with mock AI provider.
-- Re-ingest unchanged files and verify cache hits.
-- Ask a question and verify cited chunks.
-- Generate report and verify required sections.
+- 包含 PDF、DOCX、PPTX、PNG 和混合 artifact 的小型目录。
+- 不调用 AI 的 ingest。
+- 使用 mock AI provider 的 ingest。
+- 重复 ingest 未变化文件，验证 cache hit。
+- 提问并验证引用 chunk。
+- 生成报告并验证必要章节。
 
-Performance checks:
+性能检查：
 
-- Many small files.
-- One large PDF.
-- PPTX with many images.
-- Repeated ingest after minor changes.
+- 大量小文件。
+- 单个大 PDF。
+- 包含大量图片的 PPTX。
+- 轻微修改后的重复 ingest。
 
-## Implementation Notes
+## 实现说明
 
-Rust crate layout should stay modular:
+Rust crate 布局保持模块化：
 
 ```text
 src/
@@ -357,20 +357,20 @@ src/
   qa.rs
 ```
 
-Recommended crate choices should be validated during implementation rather than locked in this design. Likely candidates include `clap`, `tokio`, `serde`, `reqwest`, `sqlx` or `rusqlite`, `tantivy`, and a small local vector store abstraction.
+具体 crate 选择在实现中通过编译验证，不在设计阶段过早锁死。候选包括 `clap`、`tokio`、`serde`、`reqwest`、`rusqlite`、`tantivy`、`pdf-extract`，以及一个小型本地向量索引抽象。
 
-## First Implementation Slice
+## 第一版实现切片
 
-The first implementation plan should build a vertical slice:
+第一版先做一个可运行的纵向切片：
 
-1. CLI and workspace initialization.
-2. File discovery, hashing, and metadata SQLite.
-3. Plain text and minimal PDF text extraction.
-4. Chunk store and full-text search.
-5. Mock AI provider and AI cache.
-6. `ask` over local search with mock answer.
-7. OpenAI-compatible provider behind config.
-8. Image description path for standalone images.
-9. Basic report generation.
+1. CLI 和工作区初始化。
+2. 文件发现、hash 和 SQLite 元数据。
+3. 纯文本和基础 PDF 文本抽取。
+4. chunk 存储和全文搜索。
+5. mock AI provider 和 AI 缓存。
+6. 基于本地检索的 `ask`。
+7. 配置驱动的 OpenAI-compatible provider。
+8. 独立图片的描述入口。
+9. 基础报告生成。
 
-This keeps the first version testable before adding deeper Office parsing and MCP integration.
+这样可以在深入 Office 解析和 MCP 集成之前，先得到一个可测试、可运行、可演进的版本。
