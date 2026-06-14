@@ -45,7 +45,10 @@ impl<P: AiProvider> QaEngine<P> {
     }
 }
 
-pub fn answer_workspace(workspace_root: impl AsRef<std::path::Path>, question: &str) -> Result<QaAnswer> {
+pub fn answer_workspace(
+    workspace_root: impl AsRef<std::path::Path>,
+    question: &str,
+) -> Result<QaAnswer> {
     let workspace = Workspace::open(workspace_root);
     let store = MetadataStore::open(workspace.metadata_db_path())?;
     QaEngine::default().answer(&store, question)
@@ -73,10 +76,24 @@ mod tests {
         let doc = DocumentRecord::new_for_test("doc-1", "process.txt", "text/plain");
         store.upsert_document(&doc).unwrap();
         store
-            .insert_chunk("chunk-1", "doc-1", "text", "核心流程是申请、审核、归档。", None, None)
+            .insert_chunk(
+                "chunk-1",
+                "doc-1",
+                "text",
+                "核心流程是申请、审核、归档。",
+                None,
+                None,
+            )
             .unwrap();
 
-        let answer = QaEngine::default().answer(&store, "核心流程是什么？").unwrap();
-        assert!(answer.sources.iter().any(|source| source.ends_with("process.txt")));
+        let answer = QaEngine::default()
+            .answer(&store, "核心流程是什么？")
+            .unwrap();
+        assert!(
+            answer
+                .sources
+                .iter()
+                .any(|source| source.ends_with("process.txt"))
+        );
     }
 }

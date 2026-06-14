@@ -107,7 +107,11 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn describe_image_command(image_path: PathBuf, workspace_root: PathBuf, dry_run_ai: bool) -> Result<()> {
+fn describe_image_command(
+    image_path: PathBuf,
+    workspace_root: PathBuf,
+    dry_run_ai: bool,
+) -> Result<()> {
     let workspace = Workspace::open(&workspace_root);
     let content_hash = sha256_file(&image_path)?;
     let mime_type = guess_file_type(&image_path);
@@ -123,7 +127,8 @@ fn describe_image_command(image_path: PathBuf, workspace_root: PathBuf, dry_run_
 
     let image = ImageInput::new(&image_path, mime_type, &content_hash);
     let provider = MockAiProvider::default();
-    let understanding = provider.describe_image(&image, "请描述这张业务图片中的流程、角色和关键信息。")?;
+    let understanding =
+        provider.describe_image(&image, "请描述这张业务图片中的流程、角色和关键信息。")?;
     let cache_key = AiCacheKey::new(
         "mock",
         &understanding.model,

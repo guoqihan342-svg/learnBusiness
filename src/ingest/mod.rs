@@ -5,7 +5,7 @@ use std::path::Path;
 use anyhow::Result;
 use sha2::{Digest, Sha256};
 
-use crate::discover::{discover_documents, DiscoveredDocument};
+use crate::discover::{DiscoveredDocument, discover_documents};
 use crate::ingest::extract::extract_document_text;
 use crate::models::{Chunk, ChunkKind};
 use crate::store::{DocumentRecord, MetadataStore};
@@ -19,7 +19,10 @@ pub struct IngestSummary {
     pub warnings: usize,
 }
 
-pub fn run_ingest(workspace_root: impl AsRef<Path>, docs_dir: impl AsRef<Path>) -> Result<IngestSummary> {
+pub fn run_ingest(
+    workspace_root: impl AsRef<Path>,
+    docs_dir: impl AsRef<Path>,
+) -> Result<IngestSummary> {
     let workspace = Workspace::open(workspace_root);
     let store = MetadataStore::open(workspace.metadata_db_path())?;
     let documents = discover_documents(docs_dir)?;

@@ -14,7 +14,13 @@ impl ReportGenerator {
         let chunks = store.list_chunks(20)?;
         let source_lines = chunks
             .iter()
-            .map(|chunk| format!("- `{}`: {}", chunk.document_path, first_line(&chunk.snippet)))
+            .map(|chunk| {
+                format!(
+                    "- `{}`: {}",
+                    chunk.document_path,
+                    first_line(&chunk.snippet)
+                )
+            })
             .collect::<Vec<_>>();
 
         Ok(format!(
@@ -99,7 +105,14 @@ mod tests {
         let doc = DocumentRecord::new_for_test("doc-1", "process.txt", "text/plain");
         store.upsert_document(&doc).unwrap();
         store
-            .insert_chunk("chunk-1", "doc-1", "text", "核心流程是申请、审核、归档。", None, None)
+            .insert_chunk(
+                "chunk-1",
+                "doc-1",
+                "text",
+                "核心流程是申请、审核、归档。",
+                None,
+                None,
+            )
             .unwrap();
 
         let report = ReportGenerator::generate(&store).unwrap();

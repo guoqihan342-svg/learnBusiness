@@ -1,18 +1,9 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AppConfig {
     pub ai: AiConfig,
     pub safety: SafetyConfig,
-}
-
-impl Default for AppConfig {
-    fn default() -> Self {
-        Self {
-            ai: AiConfig::default(),
-            safety: SafetyConfig::default(),
-        }
-    }
 }
 
 impl AppConfig {

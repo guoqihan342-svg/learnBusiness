@@ -231,7 +231,9 @@ impl MetadataStore {
     pub fn document_count(&self) -> Result<usize> {
         let count = self
             .connection
-            .query_row("SELECT COUNT(*) FROM documents", [], |row| row.get::<_, i64>(0))?;
+            .query_row("SELECT COUNT(*) FROM documents", [], |row| {
+                row.get::<_, i64>(0)
+            })?;
         Ok(count as usize)
     }
 }
