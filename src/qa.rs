@@ -1,6 +1,7 @@
 use anyhow::Result;
 
 use crate::ai::{AiProvider, AiTextChunk, MockAiProvider};
+use crate::config::DEFAULT_CONTEXT_CHUNKS;
 use crate::store::{MetadataStore, SearchResult};
 use crate::workspace::Workspace;
 
@@ -28,7 +29,7 @@ impl<P: AiProvider> QaEngine<P> {
     }
 
     pub fn answer(&self, store: &MetadataStore, question: &str) -> Result<QaAnswer> {
-        let results = store.search_text(question, 5)?;
+        let results = store.search_text(question, DEFAULT_CONTEXT_CHUNKS)?;
         if results.is_empty() {
             return Ok(QaAnswer {
                 answer: "未找到相关来源。".to_string(),

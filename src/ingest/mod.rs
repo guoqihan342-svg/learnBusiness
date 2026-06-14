@@ -5,6 +5,7 @@ use std::path::Path;
 use anyhow::Result;
 use sha2::{Digest, Sha256};
 
+use crate::config::DEFAULT_CHUNK_CHAR_LIMIT;
 use crate::discover::{DiscoveredDocument, discover_documents};
 use crate::ingest::extract::extract_document_text;
 use crate::models::{Chunk, ChunkKind};
@@ -74,10 +75,56 @@ fn ingest_one(store: &MetadataStore, document: &DiscoveredDocument) -> Result<bo
         return Ok(false);
     }
 
-    let chunk_hash = sha256_text(&extracted.text);
-    let chunk_id = Chunk::stable_id(&document_id, ChunkKind::Text, None, None, &chunk_hash);
-    store.insert_chunk(&chunk_id, &document_id, "text", &extracted.text, None, None)?;
+    for (index, text) in split_text_chunks(&extracted.text, DEFAULT_CHUNK_CHAR_LIMIT)
+        .into_iter()
+        .enumerate()
+    {
+        let chunk_hash = sha256_text(&text);
+        let chunk_number = (index + 1) as u32;
+        let chunk_id = Chunk::stable_id(
+            &document_id,
+            ChunkKind::Text,
+            Some(chunk_number),
+            None,
+            &chunk_hash,
+        );
+        store.insert_chunk(
+            &chunk_id,
+            &document_id,
+            "text",
+            &text,
+            Some(chunk_number),
+            None,
+        )?;
+    }
     Ok(true)
+}
+
+fn split_text_chunks(text: &str, max_chars: usize) -> Vec<String> {
+    let clean = text.trim();
+    if clean.is_empty() {
+        return Vec::new();
+    }
+    if clean.chars().count() <= max_chars {
+        return vec![clean.to_string()];
+    }
+
+    let mut chunks = Vec::new();
+    let mut current = String::new();
+    let mut current_chars = 0_usize;
+    for ch in clean.chars() {
+        current.push(ch);
+        current_chars += 1;
+        if current_chars >= max_chars {
+            chunks.push(current.trim().to_string());
+            current.clear();
+            current_chars = 0;
+        }
+    }
+    if !current.trim().is_empty() {
+        chunks.push(current.trim().to_string());
+    }
+    chunks
 }
 
 fn stable_document_id(path: &str) -> String {
@@ -116,5 +163,26 @@ mod tests {
             MetadataStore::open(Workspace::open(workspace.path()).metadata_db_path()).unwrap();
         assert!(store.search_text("旧审批", 5).unwrap().is_empty());
         assert_eq!(store.search_text("新归档", 5).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn long_text_is_split_into_bounded_chunks() {
+        let workspace = tempfile::tempdir().unwrap();
+        let docs = tempfile::tempdir().unwrap();
+        let file = docs.path().join("large.txt");
+        std::fs::write(&file, "业务规则".repeat(700)).unwrap();
+
+        let summary = run_ingest(workspace.path(), docs.path()).unwrap();
+        assert_eq!(summary.indexed, 1);
+
+        let store =
+            MetadataStore::open(Workspace::open(workspace.path()).metadata_db_path()).unwrap();
+        let chunks = store.list_chunks(10).unwrap();
+        assert!(chunks.len() > 1);
+        assert!(
+            chunks
+                .iter()
+                .all(|chunk| chunk.snippet.chars().count() <= 1600)
+        );
     }
 }

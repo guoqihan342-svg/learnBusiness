@@ -1,19 +1,20 @@
 use std::path::PathBuf;
 
 use anyhow::Result;
-use biz_agent::ai::cache::AiCacheKey;
-use biz_agent::ai::{AiProvider, ImageInput, MockAiProvider};
-use biz_agent::discover::{guess_file_type, sha256_file};
-use biz_agent::ingest::run_ingest;
-use biz_agent::qa::answer_workspace;
-use biz_agent::report::report_workspace;
-use biz_agent::store::{AiCallRecord, MetadataStore};
-use biz_agent::workspace::Workspace;
 use clap::{Parser, Subcommand};
+use learn_business::ai::cache::AiCacheKey;
+use learn_business::ai::{AiProvider, ImageInput, MockAiProvider};
+use learn_business::config::APP_NAME;
+use learn_business::discover::{guess_file_type, sha256_file};
+use learn_business::ingest::run_ingest;
+use learn_business::qa::answer_workspace;
+use learn_business::report::report_workspace;
+use learn_business::store::{AiCallRecord, MetadataStore};
+use learn_business::workspace::Workspace;
 
 #[derive(Debug, Parser)]
-#[command(name = "biz-agent")]
-#[command(about = "本地优先的业务文档理解 agent")]
+#[command(name = APP_NAME)]
+#[command(about = "本地优先、轻量、省 token 的业务理解智能体")]
 struct Cli {
     #[command(subcommand)]
     command: Commands,

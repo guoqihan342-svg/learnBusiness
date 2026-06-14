@@ -1,9 +1,17 @@
 use serde::{Deserialize, Serialize};
 
+pub const APP_NAME: &str = "learnBusiness";
+pub const WORKSPACE_DIR_NAME: &str = ".learnBusiness";
+pub const CONFIG_DIR_NAME: &str = "config";
+pub const APP_CONFIG_FILE_NAME: &str = "app.toml";
+pub const DEFAULT_CONTEXT_CHUNKS: usize = 5;
+pub const DEFAULT_CHUNK_CHAR_LIMIT: usize = 1600;
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AppConfig {
     pub ai: AiConfig,
     pub safety: SafetyConfig,
+    pub performance: PerformanceConfig,
 }
 
 impl AppConfig {
@@ -20,6 +28,10 @@ embedding_model = \"{}\"
 [safety]
 redact_before_external_ai = {}
 dry_run_ai = {}
+
+[performance]
+context_chunks = {}
+chunk_char_limit = {}
 ",
             self.ai.provider,
             self.ai.base_url,
@@ -27,7 +39,9 @@ dry_run_ai = {}
             self.ai.vision_model,
             self.ai.embedding_model,
             self.safety.redact_before_external_ai,
-            self.safety.dry_run_ai
+            self.safety.dry_run_ai,
+            self.performance.context_chunks,
+            self.performance.chunk_char_limit
         )
     }
 }
@@ -65,5 +79,35 @@ impl Default for SafetyConfig {
             redact_before_external_ai: true,
             dry_run_ai: false,
         }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PerformanceConfig {
+    pub context_chunks: usize,
+    pub chunk_char_limit: usize,
+}
+
+impl Default for PerformanceConfig {
+    fn default() -> Self {
+        Self {
+            context_chunks: DEFAULT_CONTEXT_CHUNKS,
+            chunk_char_limit: DEFAULT_CHUNK_CHAR_LIMIT,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_config_contains_safety_and_performance_without_api_key() {
+        let config = AppConfig::default().to_toml_string();
+        assert!(config.contains("[safety]"));
+        assert!(config.contains("[performance]"));
+        assert!(config.contains("context_chunks = 5"));
+        assert!(config.contains("chunk_char_limit = 1600"));
+        assert!(!config.contains("api_key"));
     }
 }

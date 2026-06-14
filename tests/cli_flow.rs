@@ -2,7 +2,7 @@ use assert_cmd::Command;
 
 #[test]
 fn prints_help_with_core_commands() {
-    let mut cmd = Command::cargo_bin("biz-agent").unwrap();
+    let mut cmd = Command::cargo_bin("learnBusiness").unwrap();
     cmd.arg("--help")
         .assert()
         .success()
@@ -12,18 +12,19 @@ fn prints_help_with_core_commands() {
 }
 
 #[test]
-fn init_creates_agent_index_layout() {
+fn init_creates_learn_business_layout_with_config_folder() {
     let temp = tempfile::tempdir().unwrap();
-    Command::cargo_bin("biz-agent")
+    Command::cargo_bin("learnBusiness")
         .unwrap()
         .arg("init")
         .arg(temp.path())
         .assert()
         .success();
 
-    assert!(temp.path().join(".agent-index/config.toml").exists());
-    assert!(temp.path().join(".agent-index/artifacts/images").exists());
-    assert!(temp.path().join(".agent-index/cache/ai").exists());
+    assert!(temp.path().join(".learnBusiness/config/app.toml").exists());
+    assert!(!temp.path().join(".learnBusiness/config.toml").exists());
+    assert!(temp.path().join(".learnBusiness/artifacts/images").exists());
+    assert!(temp.path().join(".learnBusiness/cache/ai").exists());
 }
 
 #[test]
@@ -32,13 +33,13 @@ fn ingest_indexes_text_document() {
     let docs = tempfile::tempdir().unwrap();
     std::fs::write(docs.path().join("policy.txt"), "客户准入规则").unwrap();
 
-    Command::cargo_bin("biz-agent")
+    Command::cargo_bin("learnBusiness")
         .unwrap()
         .args(["init", workspace.path().to_str().unwrap()])
         .assert()
         .success();
 
-    Command::cargo_bin("biz-agent")
+    Command::cargo_bin("learnBusiness")
         .unwrap()
         .args([
             "ingest",
@@ -52,7 +53,7 @@ fn ingest_indexes_text_document() {
     assert!(
         workspace
             .path()
-            .join(".agent-index/metadata.sqlite")
+            .join(".learnBusiness/metadata.sqlite")
             .exists()
     );
 }
@@ -67,12 +68,12 @@ fn ask_returns_answer_with_source() {
     )
     .unwrap();
 
-    Command::cargo_bin("biz-agent")
+    Command::cargo_bin("learnBusiness")
         .unwrap()
         .args(["init", workspace.path().to_str().unwrap()])
         .assert()
         .success();
-    Command::cargo_bin("biz-agent")
+    Command::cargo_bin("learnBusiness")
         .unwrap()
         .args([
             "ingest",
@@ -83,7 +84,7 @@ fn ask_returns_answer_with_source() {
         .assert()
         .success();
 
-    Command::cargo_bin("biz-agent")
+    Command::cargo_bin("learnBusiness")
         .unwrap()
         .args([
             "ask",
@@ -103,13 +104,13 @@ fn describe_image_dry_run_shows_hash_without_ai_call() {
     let image = image_dir.path().join("diagram.png");
     std::fs::write(&image, b"not a real png but enough for hashing").unwrap();
 
-    Command::cargo_bin("biz-agent")
+    Command::cargo_bin("learnBusiness")
         .unwrap()
         .args(["init", workspace.path().to_str().unwrap()])
         .assert()
         .success();
 
-    Command::cargo_bin("biz-agent")
+    Command::cargo_bin("learnBusiness")
         .unwrap()
         .args([
             "describe-image",
@@ -131,12 +132,12 @@ fn inspect_ai_lists_dry_run_image_audit_record() {
     let image = image_dir.path().join("diagram.png");
     std::fs::write(&image, b"not a real png but enough for hashing").unwrap();
 
-    Command::cargo_bin("biz-agent")
+    Command::cargo_bin("learnBusiness")
         .unwrap()
         .args(["init", workspace.path().to_str().unwrap()])
         .assert()
         .success();
-    Command::cargo_bin("biz-agent")
+    Command::cargo_bin("learnBusiness")
         .unwrap()
         .args([
             "describe-image",
@@ -148,7 +149,7 @@ fn inspect_ai_lists_dry_run_image_audit_record() {
         .assert()
         .success();
 
-    Command::cargo_bin("biz-agent")
+    Command::cargo_bin("learnBusiness")
         .unwrap()
         .args([
             "inspect-ai",
