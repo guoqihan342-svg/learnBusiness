@@ -196,6 +196,44 @@ impl MetadataStore {
         rows.collect::<rusqlite::Result<Vec<_>>>()
             .map_err(Into::into)
     }
+
+    pub fn list_chunks(&self, limit: usize) -> Result<Vec<SearchResult>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+
+        let mut statement = self.connection.prepare(
+            "
+            SELECT
+                c.id,
+                d.path,
+                c.text,
+                0.0 AS score
+            FROM chunks c
+            JOIN documents d ON d.id = c.document_id
+            ORDER BY d.path, c.id
+            LIMIT ?1
+            ",
+        )?;
+        let rows = statement.query_map(params![limit as i64], |row| {
+            Ok(SearchResult {
+                chunk_id: row.get(0)?,
+                document_path: row.get(1)?,
+                snippet: row.get(2)?,
+                score: row.get(3)?,
+            })
+        })?;
+
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(Into::into)
+    }
+
+    pub fn document_count(&self) -> Result<usize> {
+        let count = self
+            .connection
+            .query_row("SELECT COUNT(*) FROM documents", [], |row| row.get::<_, i64>(0))?;
+        Ok(count as usize)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -273,16 +311,45 @@ fn full_text_index_body(text: &str) -> String {
 }
 
 fn fts_phrase_query(query: &str) -> String {
-    let terms = query
+    let mut terms = query
         .split_whitespace()
         .filter(|term| !term.is_empty())
-        .map(|term| format!("\"{}\"", term.replace('"', "\"\"")))
         .collect::<Vec<_>>();
 
-    if terms.is_empty() {
+    let normalized = query
+        .chars()
+        .filter(|ch| ch.is_alphanumeric())
+        .collect::<String>();
+    if !normalized.is_empty() {
+        terms.push(&normalized);
+    }
+
+    let chars = normalized.chars().collect::<Vec<_>>();
+    let mut owned_terms = terms
+        .into_iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+    for width in [2_usize, 3] {
+        if chars.len() < width {
+            continue;
+        }
+        for window in chars.windows(width) {
+            owned_terms.push(window.iter().collect());
+        }
+    }
+
+    owned_terms.sort();
+    owned_terms.dedup();
+
+    if owned_terms.is_empty() {
         "\"\"".to_string()
     } else {
-        terms.join(" OR ")
+        owned_terms
+            .into_iter()
+            .filter(|term| !term.is_empty())
+            .map(|term| format!("\"{}\"", term.replace('"', "\"\"")))
+            .collect::<Vec<_>>()
+            .join(" OR ")
     }
 }
 

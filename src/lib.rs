@@ -3,6 +3,8 @@ pub mod config;
 pub mod discover;
 pub mod ingest;
 pub mod models;
+pub mod qa;
+pub mod report;
 pub mod store;
 pub mod task;
 pub mod workspace;

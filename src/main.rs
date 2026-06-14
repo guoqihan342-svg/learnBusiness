@@ -1,7 +1,12 @@
 use std::path::PathBuf;
 
 use anyhow::Result;
+use biz_agent::ai::cache::AiCacheKey;
+use biz_agent::ai::{AiProvider, ImageInput, MockAiProvider};
+use biz_agent::discover::{guess_file_type, sha256_file};
 use biz_agent::ingest::run_ingest;
+use biz_agent::qa::answer_workspace;
+use biz_agent::report::report_workspace;
 use biz_agent::workspace::Workspace;
 use clap::{Parser, Subcommand};
 
@@ -75,26 +80,63 @@ fn main() -> Result<()> {
             println!("AI 调用检查: {}", workspace.display());
         }
         Commands::Report { workspace, out } => {
-            println!("生成报告: {} -> {}", workspace.display(), out.display());
+            report_workspace(&workspace, &out)?;
+            println!("生成报告: {}", out.display());
         }
         Commands::Ask {
             workspace,
             question,
         } => {
-            println!("问答: {} | {}", workspace.display(), question);
+            let answer = answer_workspace(&workspace, &question)?;
+            println!("{}", answer.answer);
+            if !answer.sources.is_empty() {
+                println!("来源:");
+                for source in answer.sources {
+                    println!("- {source}");
+                }
+            }
         }
         Commands::DescribeImage {
             image_path,
             workspace,
             dry_run_ai,
         } => {
-            println!(
-                "图片描述: {} | workspace={} | dry_run_ai={}",
-                image_path.display(),
-                workspace.display(),
-                dry_run_ai
-            );
+            describe_image_command(image_path, workspace, dry_run_ai)?;
         }
     }
+    Ok(())
+}
+
+fn describe_image_command(image_path: PathBuf, workspace_root: PathBuf, dry_run_ai: bool) -> Result<()> {
+    let workspace = Workspace::open(&workspace_root);
+    let content_hash = sha256_file(&image_path)?;
+    let mime_type = guess_file_type(&image_path);
+    if dry_run_ai {
+        println!(
+            "dry-run AI image={} sha256={} mime={}",
+            image_path.display(),
+            content_hash,
+            mime_type
+        );
+        return Ok(());
+    }
+
+    let image = ImageInput::new(&image_path, mime_type, &content_hash);
+    let provider = MockAiProvider::default();
+    let understanding = provider.describe_image(&image, "请描述这张业务图片中的流程、角色和关键信息。")?;
+    let cache_key = AiCacheKey::new(
+        "mock",
+        &understanding.model,
+        "describe_image",
+        "v1",
+        &content_hash,
+        false,
+    );
+    std::fs::create_dir_all(workspace.ai_cache_dir())?;
+    std::fs::write(
+        workspace.ai_cache_dir().join(cache_key.to_filename()),
+        &understanding.description,
+    )?;
+    println!("{}", understanding.description);
     Ok(())
 }
