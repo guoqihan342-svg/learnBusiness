@@ -2,14 +2,12 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use learn_business::ai::cache::AiCacheKey;
-use learn_business::ai::{AiProvider, ImageInput, api_key_from_env, provider_from_config};
-use learn_business::config::{APP_NAME, AppConfig};
-use learn_business::discover::{guess_file_type, sha256_file};
+use learn_business::ai::AiRuntime;
+use learn_business::config::APP_NAME;
 use learn_business::ingest::run_ingest;
 use learn_business::qa::answer_workspace;
 use learn_business::report::report_workspace;
-use learn_business::store::{AiCallRecord, MetadataStore};
+use learn_business::store::MetadataStore;
 use learn_business::workspace::Workspace;
 
 #[derive(Debug, Parser)]
@@ -114,53 +112,28 @@ fn describe_image_command(
     workspace_root: PathBuf,
     dry_run_ai: bool,
 ) -> Result<()> {
-    let workspace = Workspace::open(&workspace_root);
-    let config = AppConfig::load_or_default(workspace.config_path())?;
-    let store = MetadataStore::open(workspace.metadata_db_path())?;
-    let content_hash = sha256_file(&image_path)?;
-    let mime_type = guess_file_type(&image_path);
+    let runtime = AiRuntime::open(&workspace_root)?;
+    let result = runtime.describe_image(&image_path, dry_run_ai)?;
     if dry_run_ai {
-        store.insert_ai_call(&AiCallRecord::new(
-            &config.ai.provider,
-            &config.ai.vision_model,
-            "describe_image",
-            &content_hash,
-            "dry_run",
-        ))?;
         println!(
-            "dry-run AI purpose=describe_image image={} sha256={} mime={} redaction=false token_estimate=0",
-            image_path.display(),
-            content_hash,
-            mime_type
+            "dry-run AI purpose={} provider={} model={} image={} input_hash={} sha256={} mime={} redaction={} token_estimate={} local_provider={}",
+            result.purpose,
+            result.provider,
+            result.model,
+            result.image_path.display(),
+            result.input_hash,
+            result.input_hash,
+            result.mime_type,
+            result.redaction_applied,
+            result.token_estimate,
+            result.local_provider
         );
         return Ok(());
     }
 
-    let image = ImageInput::new(&image_path, mime_type, &content_hash);
-    let provider = provider_from_config(&config.ai, api_key_from_env(&config.ai))?;
-    let understanding =
-        provider.describe_image(&image, "请描述这张业务图片中的流程、角色和关键信息。")?;
-    store.insert_ai_call(&AiCallRecord::new(
-        &config.ai.provider,
-        &understanding.model,
-        "describe_image",
-        &content_hash,
-        "completed",
-    ))?;
-    let cache_key = AiCacheKey::new(
-        &config.ai.provider,
-        &understanding.model,
-        "describe_image",
-        "v1",
-        &content_hash,
-        false,
-    );
-    std::fs::create_dir_all(workspace.ai_cache_dir())?;
-    std::fs::write(
-        workspace.ai_cache_dir().join(cache_key.to_filename()),
-        &understanding.description,
-    )?;
-    println!("{}", understanding.description);
+    if let Some(description) = result.description {
+        println!("{description}");
+    }
     Ok(())
 }
 
@@ -175,14 +148,16 @@ fn inspect_ai_command(workspace_root: PathBuf) -> Result<()> {
 
     for call in calls {
         println!(
-            "purpose={} provider={} model={} status={} input_hash={} redaction={} token_estimate={}",
+            "purpose={} provider={} model={} status={} input_hash={} output_hash={} redaction={} token_estimate={} error_category={}",
             call.purpose,
             call.provider,
             call.model,
             call.status,
             call.input_hash,
+            call.output_hash.as_deref().unwrap_or("-"),
             call.redaction_applied,
-            call.token_estimate.unwrap_or(0)
+            call.token_estimate.unwrap_or(0),
+            call.error_category.as_deref().unwrap_or("-")
         );
     }
     Ok(())

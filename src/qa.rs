@@ -1,9 +1,8 @@
 use anyhow::Result;
 
-use crate::ai::{AiProvider, AiTextChunk, MockAiProvider, api_key_from_env, provider_from_config};
-use crate::config::{AppConfig, DEFAULT_CONTEXT_CHUNKS};
+use crate::ai::{AiProvider, AiRuntime, AiTextChunk, MockAiProvider};
+use crate::config::DEFAULT_CONTEXT_CHUNKS;
 use crate::store::{MetadataStore, SearchResult};
-use crate::workspace::Workspace;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QaAnswer {
@@ -63,13 +62,7 @@ pub fn answer_workspace(
     workspace_root: impl AsRef<std::path::Path>,
     question: &str,
 ) -> Result<QaAnswer> {
-    let workspace = Workspace::open(workspace_root);
-    let config = AppConfig::load_or_default(workspace.config_path())?;
-    let store = MetadataStore::open(workspace.metadata_db_path())?;
-    let provider = provider_from_config(&config.ai, api_key_from_env(&config.ai))?;
-    QaEngine::new(provider)
-        .with_context_chunks(config.performance.context_chunks)
-        .answer(&store, question)
+    AiRuntime::open(workspace_root)?.answer(question)
 }
 
 fn unique_sources(results: &[SearchResult]) -> Vec<String> {
@@ -85,8 +78,9 @@ fn unique_sources(results: &[SearchResult]) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ai::{Answer, Embeddings, ImageInput, ImageUnderstanding, Summary};
+    use crate::ai::{AiRuntime, Answer, Embeddings, ImageInput, ImageUnderstanding, Summary};
     use crate::store::DocumentRecord;
+    use crate::workspace::Workspace;
 
     #[test]
     fn answers_with_sources_from_store() {
@@ -191,5 +185,30 @@ chunk_char_limit = 1600
 
         let answer = answer_workspace(dir.path(), "共同流程是什么？").unwrap();
         assert_eq!(answer.sources.len(), 1);
+    }
+
+    #[test]
+    fn ai_runtime_answer_preserves_default_mock_behavior() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = Workspace::init(dir.path()).unwrap();
+        let store = MetadataStore::open(workspace.metadata_db_path()).unwrap();
+        let doc = DocumentRecord::new_for_test("doc-1", "runtime-process.txt", "text/plain");
+        store.upsert_document(&doc).unwrap();
+        store
+            .insert_chunk(
+                "chunk-runtime",
+                "doc-1",
+                "text",
+                "运行时统一处理业务问答上下文。",
+                None,
+                None,
+            )
+            .unwrap();
+
+        let runtime = AiRuntime::open(dir.path()).unwrap();
+        let answer = runtime.answer("业务问答上下文怎么处理？").unwrap();
+
+        assert!(answer.answer.contains("mock answer"));
+        assert_eq!(answer.sources, vec!["runtime-process.txt".to_string()]);
     }
 }

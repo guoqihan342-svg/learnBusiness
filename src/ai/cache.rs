@@ -60,4 +60,32 @@ mod tests {
         let b = AiCacheKey::new("openai", "gpt-4o-mini", "describe_image", "v2", "abc", true);
         assert_ne!(a.to_filename(), b.to_filename());
     }
+
+    #[test]
+    fn ai_cache_key_is_deterministic_for_same_inputs() {
+        let a = AiCacheKey::new("ollama", "llava", "describe_image", "v1", "abc", false);
+        let b = AiCacheKey::new("ollama", "llava", "describe_image", "v1", "abc", false);
+
+        assert_eq!(a.to_filename(), b.to_filename());
+        assert_eq!(a.to_filename().len(), 69);
+        assert!(a.to_filename().ends_with(".json"));
+    }
+
+    #[test]
+    fn ai_cache_key_isolated_by_all_dimensions() {
+        let base = AiCacheKey::new("mock", "model-a", "answer", "v1", "abc", false);
+        let base_name = base.to_filename();
+        let variants = [
+            AiCacheKey::new("ollama", "model-a", "answer", "v1", "abc", false),
+            AiCacheKey::new("mock", "model-b", "answer", "v1", "abc", false),
+            AiCacheKey::new("mock", "model-a", "describe_image", "v1", "abc", false),
+            AiCacheKey::new("mock", "model-a", "answer", "v2", "abc", false),
+            AiCacheKey::new("mock", "model-a", "answer", "v1", "def", false),
+            AiCacheKey::new("mock", "model-a", "answer", "v1", "abc", true),
+        ];
+
+        for variant in variants {
+            assert_ne!(base_name, variant.to_filename());
+        }
+    }
 }

@@ -6,7 +6,17 @@ use anyhow::{Result, bail, ensure};
 use crate::config::AiConfig;
 
 pub mod cache;
+pub mod http;
+pub mod local_http;
+pub mod ollama;
+pub mod openai;
 pub mod redaction;
+pub mod runtime;
+
+pub use local_http::LocalHttpProvider;
+pub use ollama::OllamaProvider;
+pub use openai::OpenAiCompatibleProvider;
+pub use runtime::{AiRuntime, ImageDescriptionResult, estimate_tokens};
 
 pub trait AiProvider {
     fn describe_image(&self, image: &ImageInput, prompt: &str) -> Result<ImageUnderstanding>;
@@ -150,84 +160,6 @@ fn deterministic_embedding(text: &str) -> Vec<f32> {
     vec![text.chars().count() as f32, byte_sum]
 }
 
-#[derive(Debug, Clone)]
-pub struct OpenAiCompatibleProvider {
-    pub base_url: String,
-    pub api_key: Option<String>,
-    pub chat_model: String,
-    pub vision_model: String,
-    pub embedding_model: String,
-    client: reqwest::blocking::Client,
-}
-
-impl OpenAiCompatibleProvider {
-    pub fn new(
-        base_url: impl Into<String>,
-        api_key: Option<String>,
-        chat_model: impl Into<String>,
-        vision_model: impl Into<String>,
-        embedding_model: impl Into<String>,
-    ) -> Self {
-        Self {
-            base_url: base_url.into(),
-            api_key,
-            chat_model: chat_model.into(),
-            vision_model: vision_model.into(),
-            embedding_model: embedding_model.into(),
-            client: reqwest::blocking::Client::new(),
-        }
-    }
-
-    pub fn from_config(config: &AiConfig, api_key: Option<String>) -> Self {
-        Self::new(
-            config.base_url.clone(),
-            api_key,
-            config.chat_model.clone(),
-            config.vision_model.clone(),
-            config.embedding_model.clone(),
-        )
-    }
-
-    fn api_key(&self) -> Result<&str> {
-        self.api_key.as_deref().filter(|key| !key.is_empty()).ok_or_else(|| {
-            anyhow::anyhow!(
-                "OpenAI-compatible provider requires an API key; configure api_key or set a supported API key environment variable"
-            )
-        })
-    }
-
-    fn not_implemented(&self, operation: &str) -> Result<()> {
-        let _ = self.api_key()?;
-        let _client = self.client.clone();
-        bail!(
-            "OpenAI-compatible provider '{}' call skeleton is configured but HTTP execution is not implemented yet",
-            operation
-        )
-    }
-}
-
-impl AiProvider for OpenAiCompatibleProvider {
-    fn describe_image(&self, _image: &ImageInput, _prompt: &str) -> Result<ImageUnderstanding> {
-        self.not_implemented("describe_image")?;
-        unreachable!()
-    }
-
-    fn summarize_chunks(&self, _chunks: &[AiTextChunk], _prompt: &str) -> Result<Summary> {
-        self.not_implemented("summarize_chunks")?;
-        unreachable!()
-    }
-
-    fn embed_texts(&self, _texts: &[String]) -> Result<Embeddings> {
-        self.not_implemented("embed_texts")?;
-        unreachable!()
-    }
-
-    fn answer(&self, _question: &str, _contexts: &[AiTextChunk]) -> Result<Answer> {
-        self.not_implemented("answer")?;
-        unreachable!()
-    }
-}
-
 impl<T: AiProvider + ?Sized> AiProvider for Box<T> {
     fn describe_image(&self, image: &ImageInput, prompt: &str) -> Result<ImageUnderstanding> {
         (**self).describe_image(image, prompt)
@@ -253,174 +185,6 @@ pub fn api_key_from_env(config: &AiConfig) -> Option<String> {
     })
 }
 
-#[derive(Debug, Clone)]
-pub struct OllamaProvider {
-    pub base_url: String,
-    pub chat_model: String,
-    pub vision_model: String,
-    pub embedding_model: String,
-}
-
-impl OllamaProvider {
-    pub fn from_config(config: &AiConfig) -> Self {
-        Self {
-            base_url: config.base_url.clone(),
-            chat_model: config.chat_model.clone(),
-            vision_model: config.vision_model.clone(),
-            embedding_model: config.embedding_model.clone(),
-        }
-    }
-
-    fn not_implemented(&self, operation: &str) -> Result<()> {
-        bail!(
-            "Ollama provider '{}' is configured for local model endpoint '{}', but HTTP execution is not implemented yet",
-            operation,
-            self.base_url
-        )
-    }
-}
-
-impl AiProvider for OllamaProvider {
-    fn describe_image(&self, _image: &ImageInput, _prompt: &str) -> Result<ImageUnderstanding> {
-        self.not_implemented("describe_image")?;
-        unreachable!()
-    }
-
-    fn summarize_chunks(&self, _chunks: &[AiTextChunk], _prompt: &str) -> Result<Summary> {
-        self.not_implemented("summarize_chunks")?;
-        unreachable!()
-    }
-
-    fn embed_texts(&self, _texts: &[String]) -> Result<Embeddings> {
-        self.not_implemented("embed_texts")?;
-        unreachable!()
-    }
-
-    fn answer(&self, _question: &str, _contexts: &[AiTextChunk]) -> Result<Answer> {
-        self.not_implemented("answer")?;
-        unreachable!()
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct LocalHttpProvider {
-    pub base_url: String,
-    pub chat_model: String,
-    pub vision_model: String,
-    pub embedding_model: String,
-}
-
-impl LocalHttpProvider {
-    pub fn from_config(config: &AiConfig) -> Self {
-        Self {
-            base_url: config.base_url.clone(),
-            chat_model: config.chat_model.clone(),
-            vision_model: config.vision_model.clone(),
-            embedding_model: config.embedding_model.clone(),
-        }
-    }
-
-    fn not_implemented(&self, operation: &str) -> Result<()> {
-        bail!(
-            "Local HTTP provider '{}' is configured for local model endpoint '{}', but HTTP execution is not implemented yet",
-            operation,
-            self.base_url
-        )
-    }
-}
-
-impl AiProvider for LocalHttpProvider {
-    fn describe_image(&self, _image: &ImageInput, _prompt: &str) -> Result<ImageUnderstanding> {
-        self.not_implemented("describe_image")?;
-        unreachable!()
-    }
-
-    fn summarize_chunks(&self, _chunks: &[AiTextChunk], _prompt: &str) -> Result<Summary> {
-        self.not_implemented("summarize_chunks")?;
-        unreachable!()
-    }
-
-    fn embed_texts(&self, _texts: &[String]) -> Result<Embeddings> {
-        self.not_implemented("embed_texts")?;
-        unreachable!()
-    }
-
-    fn answer(&self, _question: &str, _contexts: &[AiTextChunk]) -> Result<Answer> {
-        self.not_implemented("answer")?;
-        unreachable!()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn mock_ai_provider_returns_deterministic_outputs() {
-        let provider = MockAiProvider::default();
-        let contexts = vec![AiTextChunk::new("chunk-1", "hello")];
-
-        let first = provider.answer("what?", &contexts).unwrap();
-        let second = provider.answer("what?", &contexts).unwrap();
-        assert_eq!(first, second);
-
-        let texts = vec!["hello".to_string(), "business".to_string()];
-        let embeddings = provider.embed_texts(&texts).unwrap();
-        assert_eq!(embeddings.vectors.len(), 2);
-        assert_eq!(embeddings.vectors[0], vec![5.0, 532.0]);
-    }
-
-    #[test]
-    fn openai_provider_requires_api_key_before_network() {
-        let provider = OpenAiCompatibleProvider::new(
-            "https://api.example.test/v1",
-            None,
-            "chat",
-            "vision",
-            "embedding",
-        );
-
-        let error = provider.answer("question", &[]).unwrap_err().to_string();
-        assert!(error.contains("requires an API key"));
-    }
-
-    #[test]
-    fn ollama_descriptor_is_local_multimodal_without_api_key() {
-        let config = AiConfig {
-            provider: "ollama".to_string(),
-            base_url: "http://127.0.0.1:11434".to_string(),
-            chat_model: "qwen2.5".to_string(),
-            vision_model: "llava".to_string(),
-            embedding_model: "nomic-embed-text".to_string(),
-            api_key_env: String::new(),
-        };
-
-        let descriptor = AiProviderDescriptor::from_config(&config).unwrap();
-        assert_eq!(descriptor.kind, AiProviderKind::Ollama);
-        assert!(descriptor.local_only);
-        assert!(descriptor.supports_vision);
-        assert!(descriptor.supports_embeddings);
-        assert!(!descriptor.requires_api_key);
-    }
-
-    #[test]
-    fn local_http_descriptor_rejects_non_local_base_url() {
-        let config = AiConfig {
-            provider: "local-http".to_string(),
-            base_url: "https://model.example.com/v1".to_string(),
-            chat_model: "chat".to_string(),
-            vision_model: "vision".to_string(),
-            embedding_model: "embedding".to_string(),
-            api_key_env: String::new(),
-        };
-
-        let error = AiProviderDescriptor::from_config(&config)
-            .unwrap_err()
-            .to_string();
-        assert!(error.contains("localhost"));
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AiProviderKind {
     Mock,
@@ -436,7 +200,9 @@ impl AiProviderKind {
             "openai" | "openai-compatible" | "openai_compatible" => Ok(Self::OpenAiCompatible),
             "ollama" => Ok(Self::Ollama),
             "local-http" | "local_http" | "local" => Ok(Self::LocalHttp),
-            other => bail!("unsupported AI provider '{other}'"),
+            other => bail!(
+                "unsupported AI provider '{other}'; supported providers: mock, openai-compatible, ollama, local-http"
+            ),
         }
     }
 }
@@ -513,4 +279,184 @@ fn is_local_base_url(base_url: &str) -> bool {
     normalized.starts_with("http://localhost:")
         || normalized.starts_with("http://127.0.0.1:")
         || normalized.starts_with("http://[::1]:")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mock_ai_provider_returns_deterministic_outputs() {
+        let provider = MockAiProvider::default();
+        let contexts = vec![AiTextChunk::new("chunk-1", "hello")];
+
+        let first = provider.answer("what?", &contexts).unwrap();
+        let second = provider.answer("what?", &contexts).unwrap();
+        assert_eq!(first, second);
+
+        let texts = vec!["hello".to_string(), "business".to_string()];
+        let embeddings = provider.embed_texts(&texts).unwrap();
+        assert_eq!(embeddings.vectors.len(), 2);
+        assert_eq!(embeddings.vectors[0], vec![5.0, 532.0]);
+    }
+
+    #[test]
+    fn openai_provider_requires_api_key_before_network() {
+        let provider = OpenAiCompatibleProvider::new(
+            "https://api.example.test/v1",
+            None,
+            "chat",
+            "vision",
+            "embedding",
+        );
+
+        let error = provider.answer("question", &[]).unwrap_err().to_string();
+        assert!(error.contains("requires an API key"));
+    }
+
+    #[test]
+    fn ollama_descriptor_is_local_multimodal_without_api_key() {
+        let config = AiConfig {
+            provider: "ollama".to_string(),
+            base_url: "http://127.0.0.1:11434".to_string(),
+            chat_model: "qwen2.5".to_string(),
+            vision_model: "llava".to_string(),
+            embedding_model: "nomic-embed-text".to_string(),
+            api_key_env: String::new(),
+        };
+
+        let descriptor = AiProviderDescriptor::from_config(&config).unwrap();
+        assert_eq!(descriptor.kind, AiProviderKind::Ollama);
+        assert!(descriptor.local_only);
+        assert!(descriptor.supports_vision);
+        assert!(descriptor.supports_embeddings);
+        assert!(!descriptor.requires_api_key);
+    }
+
+    #[test]
+    fn descriptor_covers_supported_provider_matrix() {
+        let mock = AiConfig {
+            provider: "mock".to_string(),
+            base_url: "https://api.openai.com/v1".to_string(),
+            chat_model: "chat".to_string(),
+            vision_model: "vision".to_string(),
+            embedding_model: "embedding".to_string(),
+            api_key_env: "OPENAI_API_KEY".to_string(),
+        };
+        let descriptor = AiProviderDescriptor::from_config(&mock).unwrap();
+        assert_eq!(descriptor.kind, AiProviderKind::Mock);
+        assert!(!descriptor.local_only);
+        assert!(!descriptor.requires_api_key);
+
+        let openai = AiConfig {
+            provider: "openai-compatible".to_string(),
+            base_url: "https://gateway.example.com/v1".to_string(),
+            chat_model: "gpt-4o-mini".to_string(),
+            vision_model: "gpt-4o-mini".to_string(),
+            embedding_model: "text-embedding-3-small".to_string(),
+            api_key_env: "LEARNBUSINESS_API_KEY".to_string(),
+        };
+        let descriptor = AiProviderDescriptor::from_config(&openai).unwrap();
+        assert_eq!(descriptor.kind, AiProviderKind::OpenAiCompatible);
+        assert!(!descriptor.local_only);
+        assert!(descriptor.requires_api_key);
+        assert_eq!(
+            descriptor.api_key_env.as_deref(),
+            Some("LEARNBUSINESS_API_KEY")
+        );
+
+        let local_http = AiConfig {
+            provider: "local-http".to_string(),
+            base_url: "http://localhost:8080".to_string(),
+            chat_model: "local-chat".to_string(),
+            vision_model: "local-vision".to_string(),
+            embedding_model: "local-embedding".to_string(),
+            api_key_env: String::new(),
+        };
+        let descriptor = AiProviderDescriptor::from_config(&local_http).unwrap();
+        assert_eq!(descriptor.kind, AiProviderKind::LocalHttp);
+        assert!(descriptor.local_only);
+        assert!(!descriptor.requires_api_key);
+        assert!(descriptor.supports_vision);
+        assert!(descriptor.supports_embeddings);
+    }
+
+    #[test]
+    fn descriptor_rejects_unknown_provider_with_supported_names() {
+        let config = AiConfig {
+            provider: "remote-model".to_string(),
+            base_url: "https://model.example.com/v1".to_string(),
+            chat_model: "chat".to_string(),
+            vision_model: "vision".to_string(),
+            embedding_model: "embedding".to_string(),
+            api_key_env: String::new(),
+        };
+
+        let error = AiProviderDescriptor::from_config(&config)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("unsupported AI provider"));
+        assert!(error.contains("mock"));
+        assert!(error.contains("openai-compatible"));
+        assert!(error.contains("ollama"));
+        assert!(error.contains("local-http"));
+    }
+
+    #[test]
+    fn local_http_descriptor_rejects_non_local_base_url() {
+        let config = AiConfig {
+            provider: "local-http".to_string(),
+            base_url: "https://model.example.com/v1".to_string(),
+            chat_model: "chat".to_string(),
+            vision_model: "vision".to_string(),
+            embedding_model: "embedding".to_string(),
+            api_key_env: String::new(),
+        };
+
+        let error = AiProviderDescriptor::from_config(&config)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("localhost"));
+    }
+
+    #[test]
+    fn ollama_descriptor_rejects_non_local_base_url() {
+        let config = AiConfig {
+            provider: "ollama".to_string(),
+            base_url: "https://model.example.com/v1".to_string(),
+            chat_model: "chat".to_string(),
+            vision_model: "vision".to_string(),
+            embedding_model: "embedding".to_string(),
+            api_key_env: String::new(),
+        };
+
+        let error = AiProviderDescriptor::from_config(&config)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("localhost"));
+    }
+
+    #[test]
+    fn api_key_from_env_reads_named_environment_variable_only() {
+        let env_name = "LEARNBUSINESS_PROVIDER_TEST_KEY";
+        unsafe {
+            env::set_var(env_name, "secret-from-env");
+        }
+        let config = AiConfig {
+            provider: "openai-compatible".to_string(),
+            base_url: "https://gateway.example.com/v1".to_string(),
+            chat_model: "chat".to_string(),
+            vision_model: "vision".to_string(),
+            embedding_model: "embedding".to_string(),
+            api_key_env: env_name.to_string(),
+        };
+
+        assert_eq!(
+            api_key_from_env(&config).as_deref(),
+            Some("secret-from-env")
+        );
+        unsafe {
+            env::remove_var(env_name);
+        }
+    }
 }

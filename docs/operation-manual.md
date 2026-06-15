@@ -10,10 +10,10 @@
 - 对纯文本、Markdown 和基础 PDF 文本建立本地全文索引。
 - 基于索引回答问题，只取少量相关内容块作为上下文。
 - 从已索引资料生成 Markdown 报告草稿。
-- 对图片做 AI 识别前先 dry-run，查看输入 hash、MIME 类型和调用记录。
+- 对图片做 AI 识别前先 dry-run，查看 provider、模型、输入 hash、MIME 类型和调用记录。
 - 把配置集中放在 `.learnBusiness/config/app.toml`，把索引、缓存、日志放在 `.learnBusiness/` 下。
 
-当前 AI 提供方默认是模拟实现，适合验证工作流、索引、报告和调用审计。外部 AI 调用骨架已经预留，但不要把它当成已完成的联网调用能力。
+当前 AI 提供方默认是 `mock`，适合离线验证工作流、索引、报告和调用审计。需要真实模型时，可以在 `.learnBusiness/config/app.toml` 中切换到 `ollama`、`local-http` 或 `openai-compatible`；运行时会统一经过 `AiRuntime` 做 provider 校验、脱敏、token 估算、审计和缓存。
 
 ## 环境准备
 
@@ -220,13 +220,15 @@ learnBusiness describe-image .\samples\docs\flow.png --workspace .\workspace --d
 dry-run 输出会包含：
 
 - 调用目的：`describe_image`
+- provider 和模型名
 - 图片路径
-- 图片内容 `sha256`
+- 图片内容 `sha256` / `input_hash`
 - MIME 类型
 - 脱敏标记
 - token 估算
+- 是否为本地 provider
 
-这一步适合用来审查“哪些图片会被处理”和“输入标识是什么”。如果没有 `--dry-run-ai`，当前版本会使用模拟 AI 提供方生成确定性的模拟描述，并把结果写入 `.learnBusiness/cache/ai/`。
+这一步适合用来审查“哪些图片会被处理”“会使用哪个 provider”和“输入标识是什么”。如果没有 `--dry-run-ai`，当前版本会按配置调用 provider；默认 `mock` 会生成确定性的模拟描述，真实 provider 会执行对应 HTTP 调用，并把成功结果写入 `.learnBusiness/cache/ai/`。
 
 ## 查看 AI 调用
 
@@ -249,8 +251,10 @@ learnBusiness inspect-ai --workspace .\workspace
 - `model`：模型名，例如 `mock-ai`。
 - `status`：状态，例如 `dry_run` 或 `completed`。
 - `input_hash`：输入内容 hash。
+- `output_hash`：模型输出 hash；dry-run 或失败时为 `-`。
 - `redaction`：是否应用脱敏。
 - `token_estimate`：估算 token 数。
+- `error_category`：失败分类；成功或 dry-run 时为 `-`。
 
 建议在接入真实外部 AI 前，先用 `describe-image --dry-run-ai` 和 `inspect-ai` 验证审计链路。
 
@@ -295,7 +299,18 @@ chunk_char_limit = 1600
 - `[performance].context_chunks`：问答 top-k 内容块数量，默认 5。运行时会读取这个值；当前实现会把有效值限制在 1 到 20 之间，避免一次发送过多上下文。
 - `[performance].chunk_char_limit`：导入时单个 chunk 的字符上限，默认 1600。
 
-本地 Ollama 预留配置示例：
+### 本地 Ollama 启动与配置
+
+先启动 Ollama 并准备模型。模型名可以按本机实际情况替换：
+
+```powershell
+ollama serve
+ollama pull qwen2.5
+ollama pull llava
+ollama pull nomic-embed-text
+```
+
+工作区配置示例：
 
 ```toml
 [ai]
@@ -307,7 +322,11 @@ embedding_model = "nomic-embed-text"
 api_key_env = ""
 ```
 
-通用本地 HTTP 网关预留配置示例：
+`base_url` 必须是 loopback 地址，例如 `http://127.0.0.1:11434`。如果写成远程地址，即使是 dry-run 也会被拒绝。
+
+### 通用 local-http 最小协议
+
+`local-http` 用于接入本机自建模型服务，配置示例：
 
 ```toml
 [ai]
@@ -319,7 +338,13 @@ embedding_model = "local-embedding"
 api_key_env = ""
 ```
 
-当前版本已经能读取这些配置、写入 dry-run 审计元数据，并为 `ask` 和 `describe-image` 建立 provider 工厂入口；真实本地 HTTP 协议调用仍需后续按具体模型服务实现。
+服务需要实现三个 JSON endpoint：
+
+- `POST /answer`：请求包含 `purpose`、`model`、`question`、`contexts[{id,text}]`，响应包含 `answer` 和可选 `model`。
+- `POST /describe-image`：请求包含 `purpose`、`model`、`prompt`、`image{mime_type,content_hash,base64}`，响应包含 `description` 和可选 `model`。
+- `POST /embeddings`：请求包含 `purpose`、`model`、`texts[]`，响应包含 `embeddings[][]` 和可选 `model`。
+
+`local-http` 同样只能使用 loopback 地址，适合把本机 vLLM、llama.cpp server 或自研模型网关包一层轻量协议后接入。
 
 安全建议：
 
@@ -363,7 +388,43 @@ cargo run --bin learnBusiness -- ask --workspace .\workspace "客户准入规则
 
 ### 为什么图片 dry-run 不生成真实图片说明？
 
-`--dry-run-ai` 的目的就是不调用真实 AI，只查看调用计划和记录审计。如果去掉 `--dry-run-ai`，当前版本也只是走模拟 AI 提供方，不是外部视觉模型。
+`--dry-run-ai` 的目的就是不调用真实 AI，只查看调用计划和记录审计。如果去掉 `--dry-run-ai`，命令会按 `[ai].provider` 调用真实 provider；默认 `mock` 仍只返回确定性的模拟描述。
+
+### Ollama 调用失败怎么办？
+
+先确认服务和模型：
+
+```powershell
+ollama list
+ollama serve
+```
+
+常见原因包括 Ollama 未启动、模型名写错、vision 模型不支持图片、embedding 模型不存在，或 `base_url` 不是 loopback 地址。修复后可重新执行 `ask` 或 `describe-image`。
+
+### OpenAI-compatible 提示缺少 API key 怎么办？
+
+配置文件只能写环境变量名，不能写密钥值。先设置环境变量，再运行命令：
+
+```powershell
+$env:OPENAI_API_KEY = "你的密钥"
+```
+
+如果公司网关使用其他变量名，把 `[ai].api_key_env` 改成对应名称。
+
+### 如何回退到 mock？
+
+把 `.learnBusiness/config/app.toml` 改回：
+
+```toml
+[ai]
+provider = "mock"
+```
+
+其他模型字段可以保留。回退后不会触发真实 provider HTTP 调用，本地索引、问答来源、报告和审计查看仍可继续使用。
+
+### local-http 返回 JSON 不符合协议怎么办？
+
+`inspect-ai` 会显示失败状态和错误分类。请确认本地服务返回字段名符合最小协议：问答返回 `answer`，图片返回 `description`，embedding 返回 `embeddings`。HTTP 非 2xx 或 JSON 解析失败会被记录为失败类别，不会把完整请求体或业务正文写入审计。
 
 ### 能不能直接使用 `learnBusiness` 命令？
 

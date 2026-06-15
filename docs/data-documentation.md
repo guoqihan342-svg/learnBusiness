@@ -90,22 +90,23 @@ FTS5 表用于 `ask` 和报告生成中的全文搜索。写入索引时，learn
 | 字段 | 含义 | 来源 | 生命周期 | 隐私风险 |
 | --- | --- | --- | --- | --- |
 | `id` | AI 调用记录 id | 对 provider、model、purpose、input_hash、status 计算 SHA-256 | 相同审计维度会更新同一记录 | 不含原始输入，但可关联同一调用 |
-| `task_id` | 任务类型 | 当前 `AiCallRecord::new` 固定为 `describe-image` | 插入时写入 | 风险低 |
+| `task_id` | 任务类型 | 当前按 `purpose` 写入，例如 `answer` 或 `describe_image` | 插入时写入 | 风险低 |
 | `provider` | AI 服务提供方 | 调用方传入 | 插入或冲突更新时保留 | 可暴露供应商选择 |
 | `model` | 模型名 | 调用方或 mock provider 返回 | 插入或冲突更新时保留 | 可暴露模型配置 |
-| `purpose` | 调用目的 | 当前图片理解写入 `describe_image` | 插入或冲突更新时保留 | 风险低 |
+| `purpose` | 调用目的 | runtime 写入 `answer`、`describe_image` 等 | 插入或冲突更新时保留 | 风险低 |
 | `input_hash` | 输入内容 hash | 图片等输入内容 SHA-256 | 插入或冲突更新时保留 | 不含原图，但可判断输入是否相同 |
-| `output_hash` | 输出内容 hash | 当前构造函数默认为空 | 预留给后续输出审计 | 不应写入原始输出 |
-| `token_estimate` | token 估算 | 当前默认 `0` | 冲突更新时可更新 | 风险低 |
-| `redaction_applied` | 是否已脱敏 | 当前构造函数默认为 `false` | 冲突更新时可更新 | 可暴露安全处理状态 |
-| `status` | 调用状态 | 当前写入 `dry_run` 或 `completed` | 冲突更新时可更新 | 风险低 |
+| `output_hash` | 输出内容 hash | provider 成功返回后对输出文本计算；dry-run 和失败为空 | 冲突更新时可更新 | 不写入原始输出 |
+| `token_estimate` | token 估算 | runtime 在调用前按轻量字符估算写入 | 冲突更新时可更新 | 风险低 |
+| `redaction_applied` | 是否已脱敏 | 外部 provider 且开启脱敏时写入 `true` | 冲突更新时可更新 | 可暴露安全处理状态 |
+| `error_category` | 失败类别 | provider 或配置失败时写入，例如 `api_key_missing`、`http_request`、`invalid_response`、`provider_failed` | 冲突更新时可更新 | 不含错误正文，但可暴露失败类型 |
+| `status` | 调用状态 | 当前写入 `dry_run`、`completed` 或 `failed` | 冲突更新时可更新 | 风险低 |
 | `created_at` | 数据库创建时间 | SQLite 默认时间 | 首次插入时生成；冲突更新不重置 | 风险低 |
 
-AI 调用记录的设计目标是审计，而不是日志正文。`inspect-ai` 输出的是 purpose、provider、model、status、input_hash、redaction 和 token 估算等元数据。AI 日志只应保留 hash、状态、模型和脱敏标记这类审计信息，不应写入原始业务文档、图片内容、prompt、回答正文或 API key。
+AI 调用记录的设计目标是审计，而不是日志正文。`inspect-ai` 输出的是 purpose、provider、model、status、input_hash、output_hash、redaction、token 估算和 error_category 等元数据。AI 日志只应保留 hash、状态、模型、失败分类和脱敏标记这类审计信息，不应写入原始业务文档、图片内容、prompt、回答正文、provider 返回体或 API key。
 
 ## AI cache
 
-AI cache 位于 `.learnBusiness/cache/ai/`。缓存文件名由 `AiCacheKey` 生成，参与 hash 的字段包括 provider、model、purpose、prompt_version、content_hash 和 redaction_applied，最终文件名形如 `<sha256>.json`。
+AI cache 位于 `.learnBusiness/cache/ai/`。缓存文件名由 `AiCacheKey` 生成，参与 hash 的字段包括 provider、model、purpose、prompt_version、content_hash 和 redaction_applied，最终文件名形如 `<sha256>.json`。cache key 不包含 prompt、上下文正文、图片 base64、模型回答正文或 API key。
 
 当前非 dry-run 的图片理解流程会把模型返回的描述写入 AI cache。缓存文件名本身只暴露 hash，但缓存内容可能包含对业务图片、流程图、截图或文档页面的文字描述，因此也属于敏感运行时数据。缓存只能作为本地复用数据，不应提交、共享或放入普通日志。
 
@@ -115,7 +116,7 @@ AI cache 位于 `.learnBusiness/cache/ai/`。缓存文件名由 `AiCacheKey` 生
 
 `.learnBusiness/cache/extraction/` 用于后续抽取中间结果缓存。当前源码只创建目录，尚未实现持久化写入。
 
-`.learnBusiness/logs/` 用于后续运行日志。安全要求是日志只记录必要状态、hash、耗时、错误分类等审计信息，不记录业务原文、AI prompt、AI 完整回答、图片内容、API key 或外部服务 token。
+`.learnBusiness/logs/` 用于后续运行日志。安全要求是日志只记录必要状态、hash、耗时、错误分类等审计信息，不记录业务原文、AI prompt、AI 完整回答、provider 完整返回体、请求体、图片内容、API key 或外部服务 token。
 
 ## hash、稳定 id 和去重
 
@@ -140,7 +141,7 @@ learnBusiness 当前使用三类稳定标识：
 - 不提交 `.learnBusiness/`，包括 `metadata.sqlite`、FTS5 索引、AI cache、artifacts、logs 和 extraction cache。
 - `.learnBusiness/config/app.toml` 不保存 `api_key`、访问令牌或个人账号凭据。
 - 本地模型 provider 使用 `ollama` 或 `local-http` 时，`base_url` 必须是 localhost 地址，避免把本地资料误发到远程服务。
-- AI 调用审计只保存 hash、模型、用途、状态、token 估算和脱敏标记等元数据。
+- AI 调用审计只保存 hash、模型、用途、状态、token 估算、失败分类和脱敏标记等元数据。
 - 普通日志不记录业务原文、AI prompt、AI 完整回答、图片内容或密钥。
 - `chunks.text` 和 `chunks_fts.text` 是最高敏数据，应按业务文档原文处理。
 - AI cache 可能包含模型输出的业务摘要或图片描述，应按敏感数据处理。

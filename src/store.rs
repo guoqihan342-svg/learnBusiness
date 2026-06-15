@@ -59,6 +59,7 @@ impl MetadataStore {
                 output_hash TEXT,
                 token_estimate INTEGER,
                 redaction_applied INTEGER NOT NULL DEFAULT 0,
+                error_category TEXT,
                 status TEXT NOT NULL,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
@@ -70,6 +71,7 @@ impl MetadataStore {
             );
             ",
         )?;
+        ensure_ai_calls_error_category_column(&connection)?;
 
         Ok(Self { connection })
     }
@@ -273,13 +275,15 @@ impl MetadataStore {
                 output_hash,
                 token_estimate,
                 redaction_applied,
+                error_category,
                 status
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
             ON CONFLICT(id) DO UPDATE SET
                 output_hash = excluded.output_hash,
                 token_estimate = excluded.token_estimate,
                 redaction_applied = excluded.redaction_applied,
+                error_category = excluded.error_category,
                 status = excluded.status
             ",
             params![
@@ -292,6 +296,7 @@ impl MetadataStore {
                 call.output_hash,
                 call.token_estimate.map(i64::from),
                 i64::from(call.redaction_applied),
+                call.error_category,
                 call.status,
             ],
         )?;
@@ -311,6 +316,7 @@ impl MetadataStore {
                 output_hash,
                 token_estimate,
                 redaction_applied,
+                error_category,
                 status
             FROM ai_calls
             ORDER BY created_at, id
@@ -328,7 +334,8 @@ impl MetadataStore {
                 output_hash: row.get(6)?,
                 token_estimate: token_estimate.map(|value| value as u32),
                 redaction_applied: row.get::<_, i64>(8)? != 0,
-                status: row.get(9)?,
+                error_category: row.get(9)?,
+                status: row.get(10)?,
             })
         })?;
 
@@ -400,6 +407,7 @@ pub struct AiCallRecord {
     pub output_hash: Option<String>,
     pub token_estimate: Option<u32>,
     pub redaction_applied: bool,
+    pub error_category: Option<String>,
     pub status: String,
 }
 
@@ -421,7 +429,7 @@ impl AiCallRecord {
         ));
         Self {
             id,
-            task_id: "describe-image".to_string(),
+            task_id: purpose.clone(),
             provider,
             model,
             purpose,
@@ -429,9 +437,23 @@ impl AiCallRecord {
             output_hash: None,
             token_estimate: Some(0),
             redaction_applied: false,
+            error_category: None,
             status,
         }
     }
+}
+
+fn ensure_ai_calls_error_category_column(connection: &Connection) -> Result<()> {
+    let mut statement = connection.prepare("PRAGMA table_info(ai_calls)")?;
+    let columns = statement.query_map([], |row| row.get::<_, String>(1))?;
+    let has_error_category = columns
+        .collect::<rusqlite::Result<Vec<_>>>()?
+        .iter()
+        .any(|name| name == "error_category");
+    if !has_error_category {
+        connection.execute("ALTER TABLE ai_calls ADD COLUMN error_category TEXT", [])?;
+    }
+    Ok(())
 }
 
 fn sha256_text(text: &str) -> String {
@@ -531,5 +553,48 @@ mod tests {
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].purpose, "describe_image");
         assert_eq!(calls[0].status, "dry_run");
+    }
+
+    #[test]
+    fn stores_ai_call_success_metadata() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = MetadataStore::open(dir.path().join("metadata.sqlite")).unwrap();
+        let mut record = AiCallRecord::new(
+            "mock",
+            "mock-ai",
+            "describe_image",
+            "input-hash",
+            "completed",
+        );
+        record.output_hash = Some("output-hash".to_string());
+        record.token_estimate = Some(42);
+        record.redaction_applied = true;
+        store.insert_ai_call(&record).unwrap();
+
+        let calls = store.list_ai_calls().unwrap();
+        assert_eq!(calls[0].output_hash.as_deref(), Some("output-hash"));
+        assert_eq!(calls[0].token_estimate, Some(42));
+        assert!(calls[0].redaction_applied);
+        assert_eq!(calls[0].error_category, None);
+    }
+
+    #[test]
+    fn stores_ai_call_failure_category_without_prompt() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = MetadataStore::open(dir.path().join("metadata.sqlite")).unwrap();
+        let mut record = AiCallRecord::new(
+            "openai-compatible",
+            "gpt-4o-mini",
+            "answer",
+            "input-hash-only",
+            "failed",
+        );
+        record.error_category = Some("api_key_missing".to_string());
+        store.insert_ai_call(&record).unwrap();
+
+        let calls = store.list_ai_calls().unwrap();
+        assert_eq!(calls[0].status, "failed");
+        assert_eq!(calls[0].error_category.as_deref(), Some("api_key_missing"));
+        assert_eq!(calls[0].input_hash, "input-hash-only");
     }
 }
