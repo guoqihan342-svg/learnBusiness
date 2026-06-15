@@ -50,4 +50,4 @@
 - [x] 6.2 运行 `cargo clippy --all-targets -- -D warnings` 并修复 lint。
 - [x] 6.3 运行 `cargo test`，确保全部单元测试和 CLI 测试通过。
 - [x] 6.4 运行 `openspec validate optimize-local-ai-provider-runtime`。
-- [ ] 6.5 推送实现提交，并在完成后归档 OpenSpec change。
+- [x] 6.5 推送实现提交，并在完成后归档 OpenSpec change。
