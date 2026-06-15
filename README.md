@@ -50,6 +50,14 @@ cargo run --bin learnBusiness -- report --workspace .\workspace --out report.md
 - 问答只发送 top-k 相关 chunk，不把整份文档塞进上下文。
 - 脱敏模块已覆盖邮箱、中国大陆手机号、长数字和 `sk-` 样式密钥。
 
+## 文档
+
+- [操作手册](docs/operation-manual.md)：安装、初始化、导入、问答、报告、图片 dry-run、配置和排障。
+- [数据文档](docs/data-documentation.md)：工作区目录、SQLite 表、FTS、缓存、生命周期和隐私边界。
+- [架构文档](docs/architecture.md)：模块职责、数据流、安全边界、扩展点和性能策略。
+- [设计说明](docs/superpowers/specs/2026-06-14-learnBusiness-design.md)：第一版设计目标和边界。
+- [实现计划](docs/superpowers/plans/2026-06-14-learnBusiness.md)：已完成能力和后续增强方向。
+
 ## 开发验证
 
 ```powershell
