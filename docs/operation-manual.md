@@ -284,6 +284,9 @@ dry_run_ai = false
 [performance]
 context_chunks = 5
 chunk_char_limit = 1600
+
+[logging]
+trace_enabled = true
 ```
 
 字段说明：
@@ -298,6 +301,7 @@ chunk_char_limit = 1600
 - `[safety].dry_run_ai`：AI dry-run 默认开关；命令行 `--dry-run-ai` 可用于单次图片检查。
 - `[performance].context_chunks`：问答 top-k 内容块数量，默认 5。运行时会读取这个值；当前实现会把有效值限制在 1 到 20 之间，避免一次发送过多上下文。
 - `[performance].chunk_char_limit`：导入时单个 chunk 的字符上限，默认 1600。
+- `[logging].trace_enabled`：是否写入 `.learnBusiness/logs/trace.jsonl`。默认开启，只记录 trace_id、provider、model、purpose、input_hash、output_hash、status、error_category、token_estimate、redaction 和 elapsed_ms 等元数据。
 
 ### 本地 Ollama 启动与配置
 
@@ -457,6 +461,22 @@ cargo run --bin learnBusiness -- inspect-ai --workspace .\workspace
 ```
 
 如果没有记录，会提示没有 AI 调用记录。图片 dry-run 和非 dry-run 的图片描述都会写入调用记录。
+
+### 如何定位一次 AI 调用失败？
+
+先看审计摘要：
+
+```powershell
+cargo run --bin learnBusiness -- inspect-ai --workspace .\workspace
+```
+
+再看结构化追踪日志：
+
+```powershell
+Get-Content -LiteralPath .\workspace\.learnBusiness\logs\trace.jsonl
+```
+
+每行是一条 JSON 事件，包含 `trace_id`、`operation`、`status`、`provider`、`model`、`purpose`、`input_hash`、`error_category` 和 `elapsed_ms`。日志不保存原始问题、业务 chunk 正文、图片 base64、provider 返回体或 API key。排查时优先按 `trace_id` 把 `started`、`completed`、`failed` 或 `dry_run` 事件串起来看。
 
 ### 可以把 `.learnBusiness/` 发给别人排查吗？
 

@@ -84,3 +84,14 @@
 #### Scenario: 脱敏模式不同缓存不同
 - **WHEN** 同一内容分别以脱敏和未脱敏模式调用
 - **THEN** 系统 MUST 生成不同的 AI cache key。
+
+### Requirement: 本地结构化追踪日志
+系统 SHALL 为 AI runtime 调用写入本地结构化追踪日志，帮助定位 provider 配置、请求状态、失败分类和耗时问题，同时不得保存完整 prompt、业务正文、图片 base64 或 API key。
+
+#### Scenario: Provider 调用失败写入 trace
+- **WHEN** provider 调用失败
+- **THEN** 系统 MUST 在 `.learnBusiness/logs/trace.jsonl` 写入包含 `trace_id`、`provider`、`model`、`purpose`、`input_hash`、`status=failed`、`error_category` 和 `elapsed_ms` 的记录。
+
+#### Scenario: 禁用追踪日志
+- **WHEN** `[logging].trace_enabled = false`
+- **THEN** 系统 MUST 不创建或追加 trace 日志文件，但仍保留 SQLite AI 调用审计。

@@ -17,6 +17,7 @@ pub struct AppConfig {
     pub ai: AiConfig,
     pub safety: SafetyConfig,
     pub performance: PerformanceConfig,
+    pub logging: LoggingConfig,
 }
 
 impl AppConfig {
@@ -30,6 +31,7 @@ impl AppConfig {
         let mut config = Self::default();
         apply_ai_overrides(&mut config, &text);
         apply_performance_overrides(&mut config.performance, &text);
+        apply_logging_overrides(&mut config.logging, &text);
         Ok(config)
     }
 
@@ -51,6 +53,9 @@ dry_run_ai = {}
 [performance]
 context_chunks = {}
 chunk_char_limit = {}
+
+[logging]
+trace_enabled = {}
 ",
             self.ai.provider,
             self.ai.base_url,
@@ -61,7 +66,8 @@ chunk_char_limit = {}
             self.safety.redact_before_external_ai,
             self.safety.dry_run_ai,
             self.performance.context_chunks,
-            self.performance.chunk_char_limit
+            self.performance.chunk_char_limit,
+            self.logging.trace_enabled
         )
     }
 }
@@ -142,6 +148,30 @@ fn apply_performance_overrides(performance: &mut PerformanceConfig, text: &str) 
     }
 }
 
+fn apply_logging_overrides(logging: &mut LoggingConfig, text: &str) {
+    let mut section = "";
+    for raw_line in text.lines() {
+        let line = raw_line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if line.starts_with('[') && line.ends_with(']') {
+            section = line.trim_matches(&['[', ']'][..]).trim();
+            continue;
+        }
+        if section != "logging" {
+            continue;
+        }
+
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        if key.trim() == "trace_enabled" {
+            logging.trace_enabled = parse_bool_value(value).unwrap_or(logging.trace_enabled);
+        }
+    }
+}
+
 fn parse_usize_value(value: &str) -> Option<usize> {
     value
         .split('#')
@@ -161,6 +191,22 @@ fn parse_string_value(value: &str) -> String {
         .trim()
         .trim_matches('"')
         .to_string()
+}
+
+fn parse_bool_value(value: &str) -> Option<bool> {
+    match value
+        .split('#')
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .trim_matches('"')
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "true" => Some(true),
+        "false" => Some(false),
+        _ => None,
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -216,6 +262,19 @@ impl Default for PerformanceConfig {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LoggingConfig {
+    pub trace_enabled: bool,
+}
+
+impl Default for LoggingConfig {
+    fn default() -> Self {
+        Self {
+            trace_enabled: true,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -225,8 +284,10 @@ mod tests {
         let config = AppConfig::default().to_toml_string();
         assert!(config.contains("[safety]"));
         assert!(config.contains("[performance]"));
+        assert!(config.contains("[logging]"));
         assert!(config.contains("context_chunks = 5"));
         assert!(config.contains("chunk_char_limit = 1600"));
+        assert!(config.contains("trace_enabled = true"));
         assert!(config.contains("api_key_env = \"OPENAI_API_KEY\""));
         assert!(!config.contains("api_key ="));
     }
@@ -275,5 +336,22 @@ api_key_env = \"\"
         assert_eq!(config.ai.vision_model, "llava");
         assert_eq!(config.ai.embedding_model, "nomic-embed-text");
         assert_eq!(config.ai.api_key_env, "");
+    }
+
+    #[test]
+    fn loads_logging_config_from_config_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("app.toml");
+        std::fs::write(
+            &path,
+            "\
+[logging]
+trace_enabled = false
+",
+        )
+        .unwrap();
+
+        let config = AppConfig::load_or_default(&path).unwrap();
+        assert!(!config.logging.trace_enabled);
     }
 }

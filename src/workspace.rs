@@ -43,6 +43,10 @@ impl Workspace {
         self.index_dir.join("cache").join("ai")
     }
 
+    pub fn trace_log_path(&self) -> PathBuf {
+        self.index_dir.join("logs").join("trace.jsonl")
+    }
+
     pub fn config_path(&self) -> PathBuf {
         self.config_dir().join(APP_CONFIG_FILE_NAME)
     }
@@ -89,5 +93,17 @@ mod tests {
         Workspace::init(temp.path()).unwrap();
         assert!(temp.path().join(".learnBusiness/config/app.toml").exists());
         assert!(!temp.path().join(".learnBusiness/config.toml").exists());
+    }
+
+    #[test]
+    fn workspace_exposes_trace_log_path() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = Workspace::init(temp.path()).unwrap();
+
+        assert_eq!(
+            workspace.trace_log_path(),
+            temp.path().join(".learnBusiness/logs/trace.jsonl")
+        );
+        assert!(workspace.trace_log_path().parent().unwrap().exists());
     }
 }

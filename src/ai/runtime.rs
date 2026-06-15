@@ -1,6 +1,8 @@
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 use anyhow::{Context, Result};
+use chrono::Utc;
 use sha2::{Digest, Sha256};
 
 use crate::ai::cache::AiCacheKey;
@@ -13,6 +15,7 @@ use crate::config::AppConfig;
 use crate::discover::{guess_file_type, sha256_file};
 use crate::qa::QaAnswer;
 use crate::store::{AiCallRecord, MetadataStore, SearchResult};
+use crate::trace::{TraceEvent, TraceLogger};
 use crate::workspace::Workspace;
 
 pub struct AiRuntime {
@@ -20,6 +23,7 @@ pub struct AiRuntime {
     config: AppConfig,
     descriptor: AiProviderDescriptor,
     provider: Box<dyn AiProvider>,
+    trace_logger: TraceLogger,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -55,11 +59,14 @@ impl AiRuntime {
         provider: Box<dyn AiProvider>,
     ) -> Result<Self> {
         let descriptor = AiProviderDescriptor::from_config(&config.ai)?;
+        let trace_logger =
+            TraceLogger::new(workspace.trace_log_path(), config.logging.trace_enabled);
         Ok(Self {
             workspace,
             config,
             descriptor,
             provider,
+            trace_logger,
         })
     }
 
@@ -107,13 +114,29 @@ impl AiRuntime {
         let token_estimate =
             estimate_answer_tokens(&question_for_provider, &contexts_for_provider) as u32;
         let input_hash = answer_input_hash(&question_for_provider, &contexts_for_provider);
+        let trace_id = new_trace_id("answer", &input_hash);
+        self.trace_ai_call(
+            &trace_id,
+            &AiCallAudit {
+                model: &self.config.ai.chat_model,
+                purpose: "answer",
+                input_hash: &input_hash,
+                status: "started",
+                token_estimate,
+                redaction_applied,
+                output_hash: None,
+                error_category: None,
+            },
+            None,
+        )?;
+        let started = Instant::now();
         let answer = match self
             .provider
             .answer(&question_for_provider, &contexts_for_provider)
         {
             Ok(answer) => answer,
             Err(error) => {
-                self.record_ai_call(AiCallAudit {
+                let audit = AiCallAudit {
                     model: &self.config.ai.chat_model,
                     purpose: "answer",
                     input_hash: &input_hash,
@@ -122,12 +145,14 @@ impl AiRuntime {
                     redaction_applied,
                     output_hash: None,
                     error_category: Some(classify_ai_error(&error)),
-                })?;
+                };
+                self.record_ai_call(audit.clone())?;
+                self.trace_ai_call(&trace_id, &audit, Some(started.elapsed().as_millis()))?;
                 return Err(error).context("AI answer provider call failed");
             }
         };
         let output_hash = sha256_text(&answer.text);
-        self.record_ai_call(AiCallAudit {
+        let audit = AiCallAudit {
             model: &answer.model,
             purpose: "answer",
             input_hash: &input_hash,
@@ -136,7 +161,9 @@ impl AiRuntime {
             redaction_applied,
             output_hash: Some(output_hash),
             error_category: None,
-        })?;
+        };
+        self.record_ai_call(audit.clone())?;
+        self.trace_ai_call(&trace_id, &audit, Some(started.elapsed().as_millis()))?;
         Ok(QaAnswer {
             answer: answer.text,
             sources: unique_sources(&results),
@@ -154,6 +181,7 @@ impl AiRuntime {
         let prompt = "请描述这张业务图片中的流程、角色和关键信息。";
         let redaction_applied = self.should_redact_for_provider();
         let token_estimate = estimate_tokens(prompt) as u32;
+        let trace_id = new_trace_id("describe_image", &input_hash);
         let model = if dry_run {
             self.config.ai.vision_model.clone()
         } else {
@@ -161,7 +189,7 @@ impl AiRuntime {
         };
 
         if dry_run {
-            self.record_ai_call(AiCallAudit {
+            let audit = AiCallAudit {
                 model: &model,
                 purpose: "describe_image",
                 input_hash: &input_hash,
@@ -170,7 +198,9 @@ impl AiRuntime {
                 redaction_applied,
                 output_hash: None,
                 error_category: None,
-            })?;
+            };
+            self.record_ai_call(audit.clone())?;
+            self.trace_ai_call(&trace_id, &audit, Some(0))?;
             return Ok(ImageDescriptionResult {
                 image_path,
                 description: None,
@@ -187,10 +217,25 @@ impl AiRuntime {
         }
 
         let image = ImageInput::new(&image_path, &mime_type, &input_hash);
+        self.trace_ai_call(
+            &trace_id,
+            &AiCallAudit {
+                model: &self.config.ai.vision_model,
+                purpose: "describe_image",
+                input_hash: &input_hash,
+                status: "started",
+                token_estimate,
+                redaction_applied,
+                output_hash: None,
+                error_category: None,
+            },
+            None,
+        )?;
+        let started = Instant::now();
         let understanding = match self.provider.describe_image(&image, prompt) {
             Ok(understanding) => understanding,
             Err(error) => {
-                self.record_ai_call(AiCallAudit {
+                let audit = AiCallAudit {
                     model: &self.config.ai.vision_model,
                     purpose: "describe_image",
                     input_hash: &input_hash,
@@ -199,12 +244,14 @@ impl AiRuntime {
                     redaction_applied,
                     output_hash: None,
                     error_category: Some(classify_ai_error(&error)),
-                })?;
+                };
+                self.record_ai_call(audit.clone())?;
+                self.trace_ai_call(&trace_id, &audit, Some(started.elapsed().as_millis()))?;
                 return Err(error).context("AI image provider call failed");
             }
         };
         let output_hash = sha256_text(&understanding.description);
-        self.record_ai_call(AiCallAudit {
+        let audit = AiCallAudit {
             model: &understanding.model,
             purpose: "describe_image",
             input_hash: &input_hash,
@@ -213,7 +260,9 @@ impl AiRuntime {
             redaction_applied,
             output_hash: Some(output_hash.clone()),
             error_category: None,
-        })?;
+        };
+        self.record_ai_call(audit.clone())?;
+        self.trace_ai_call(&trace_id, &audit, Some(started.elapsed().as_millis()))?;
         self.write_ai_cache(
             &understanding.model,
             "describe_image",
@@ -257,6 +306,30 @@ impl AiRuntime {
         store.insert_ai_call(&record)
     }
 
+    fn trace_ai_call(
+        &self,
+        trace_id: &str,
+        audit: &AiCallAudit<'_>,
+        elapsed_ms: Option<u128>,
+    ) -> Result<()> {
+        let mut event = TraceEvent::ai_runtime(
+            trace_id,
+            "provider_call",
+            audit.status,
+            &self.config.ai.provider,
+            audit.model,
+            audit.purpose,
+            audit.input_hash,
+        );
+        event.output_hash = audit.output_hash.clone();
+        event.token_estimate = Some(audit.token_estimate);
+        event.redaction_applied = audit.redaction_applied;
+        event.local_provider = self.descriptor.local_only;
+        event.error_category = audit.error_category.clone();
+        event.elapsed_ms = elapsed_ms;
+        self.trace_logger.append(&event)
+    }
+
     fn write_ai_cache(
         &self,
         model: &str,
@@ -286,6 +359,7 @@ pub fn estimate_tokens(text: &str) -> usize {
     text.chars().filter(|ch| !ch.is_whitespace()).count()
 }
 
+#[derive(Clone)]
 struct AiCallAudit<'a> {
     model: &'a str,
     purpose: &'a str,
@@ -334,6 +408,16 @@ fn unique_sources(results: &[SearchResult]) -> Vec<String> {
 fn sha256_text(text: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(text.as_bytes());
+    format!("{:x}", hasher.finalize())
+}
+
+fn new_trace_id(purpose: &str, input_hash: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(purpose.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(input_hash.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(Utc::now().to_rfc3339().as_bytes());
     format!("{:x}", hasher.finalize())
 }
 
@@ -394,6 +478,7 @@ mod tests {
                 context_chunks: 1,
                 chunk_char_limit: 6,
             },
+            logging: Default::default(),
         };
         let runtime =
             AiRuntime::with_provider(workspace, config, Box::new(EchoContextProvider)).unwrap();
@@ -428,6 +513,39 @@ mod tests {
     }
 
     #[test]
+    fn runtime_provider_failure_writes_safe_trace_log() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = Workspace::init(dir.path()).unwrap();
+        let store = MetadataStore::open(workspace.metadata_db_path()).unwrap();
+        let doc = DocumentRecord::new_for_test("doc-1", "trace.txt", "text/plain");
+        store.upsert_document(&doc).unwrap();
+        store
+            .insert_chunk(
+                "chunk-1",
+                "doc-1",
+                "text",
+                "敏感业务正文 13800138000",
+                None,
+                None,
+            )
+            .unwrap();
+
+        let trace_path = workspace.trace_log_path();
+        let runtime =
+            AiRuntime::with_provider(workspace, AppConfig::default(), Box::new(FailingProvider))
+                .unwrap();
+        let _ = runtime.answer("为什么失败 13800138000？").unwrap_err();
+
+        let trace_log = std::fs::read_to_string(trace_path).unwrap();
+        assert!(trace_log.contains("\"status\":\"failed\""));
+        assert!(trace_log.contains("\"error_category\":\"provider_failed\""));
+        assert!(trace_log.contains("\"purpose\":\"answer\""));
+        assert!(!trace_log.contains("敏感业务正文"));
+        assert!(!trace_log.contains("为什么失败"));
+        assert!(!trace_log.contains("13800138000"));
+    }
+
+    #[test]
     fn runtime_redacts_external_provider_inputs() {
         let dir = tempfile::tempdir().unwrap();
         let workspace = Workspace::init(dir.path()).unwrap();
@@ -456,6 +574,7 @@ mod tests {
             },
             safety: SafetyConfig::default(),
             performance: PerformanceConfig::default(),
+            logging: Default::default(),
         };
         let runtime =
             AiRuntime::with_provider(workspace, config, Box::new(EchoContextProvider)).unwrap();

@@ -46,6 +46,7 @@ cargo run --bin learnBusiness -- report --workspace .\workspace --out report.md
 - 配置文件不保存 API key；`openai-compatible` 只通过 `api_key_env` 指向环境变量读取密钥。
 - `ollama` 和 `local-http` 只允许 `localhost`、`127.0.0.1` 或 `[::1]`，避免把本地业务资料误发到远程服务。
 - 外部 provider 调用前按配置执行脱敏；审计和缓存只保存 provider、model、purpose、hash、状态、token 估算、失败类别和脱敏标记，不保存完整 prompt、图片正文、上下文正文或 API key。
+- AI 调用会写入 `.learnBusiness/logs/trace.jsonl` 结构化追踪日志，便于按 `trace_id` 定位问题；日志只记录元数据、hash、耗时和错误分类。
 - `describe-image --dry-run-ai` 只展示 provider、model、purpose、input_hash、redaction、token_estimate 和本地 provider 标记，不执行 AI 调用。
 - 未变化文件按内容 hash 跳过，避免重复抽取和重复 AI 调用。
 - 问答只发送配置指定数量的 top-k 相关 chunk，默认 5，避免把整份文档塞进上下文。

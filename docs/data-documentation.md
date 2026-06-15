@@ -27,6 +27,8 @@
 
 `.learnBusiness/metadata.sqlite` 是当前已实现的核心数据文件，保存文档元数据、chunk、FTS5 全文索引和 AI 调用审计记录。`.learnBusiness/cache/ai/` 用于保存 AI 缓存结果；`.learnBusiness/artifacts/`、`.learnBusiness/cache/extraction/`、`.learnBusiness/logs/` 目前由初始化流程创建，主要作为后续图片、页面、缩略图、抽取中间结果和日志的隔离位置。
 
+`.learnBusiness/logs/trace.jsonl` 是结构化追踪日志。每行是一条 JSON 事件，用于定位 AI 调用问题，字段包括时间、trace_id、component、operation、status、provider、model、purpose、input_hash、output_hash、token_estimate、redaction_applied、local_provider、error_category 和 elapsed_ms。它不保存 prompt、chunk 正文、图片 base64、API key 或 provider 完整返回体。
+
 `.gitignore` 已忽略 `.learnBusiness/`。任何本地导入的业务文档内容、全文索引、AI 缓存、抽取产物和日志都应留在本机，不应提交到仓库。
 
 ## SQLite 数据库
@@ -117,6 +119,8 @@ AI cache 位于 `.learnBusiness/cache/ai/`。缓存文件名由 `AiCacheKey` 生
 `.learnBusiness/cache/extraction/` 用于后续抽取中间结果缓存。当前源码只创建目录，尚未实现持久化写入。
 
 `.learnBusiness/logs/` 用于后续运行日志。安全要求是日志只记录必要状态、hash、耗时、错误分类等审计信息，不记录业务原文、AI prompt、AI 完整回答、provider 完整返回体、请求体、图片内容、API key 或外部服务 token。
+
+`trace.jsonl` 可通过 `[logging].trace_enabled = false` 关闭。关闭后不会创建或追加追踪日志，但 `ai_calls` 审计仍会写入 SQLite。
 
 ## hash、稳定 id 和去重
 

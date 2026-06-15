@@ -18,6 +18,7 @@ learnBusiness 是一个本地优先的业务文档理解工具，用于把散落
 - `.learnBusiness/config/app.toml`：集中配置 AI、安全和性能参数。
 - `.learnBusiness/metadata.sqlite`：保存文档元数据、chunk、全文索引和 AI 调用记录。
 - `.learnBusiness/cache/ai/`：保存可复用的 AI 输出缓存。
+- `.learnBusiness/logs/trace.jsonl`：保存 AI runtime 结构化追踪事件。
 - `.learnBusiness/fulltext/`、`.learnBusiness/vectors/`、`.learnBusiness/artifacts/images/`：为全文、向量和图片类中间产物预留落点。
 
 工作区目录是 learnBusiness 的主要写入边界。除用户显式指定的报告输出路径外，运行时状态应尽量留在 `.learnBusiness/` 内。
@@ -35,6 +36,7 @@ learnBusiness 是一个本地优先的业务文档理解工具，用于把散落
 - `ai`：provider、base_url、chat_model、vision_model、embedding_model、api_key_env。
 - `safety`：redact_before_external_ai、dry_run_ai。
 - `performance`：context_chunks、chunk_char_limit。
+- `logging`：trace_enabled。
 
 默认 provider 是 `mock`，默认不把 API key 写进配置文件，只保存 API key 所在环境变量名。当前 provider registry 支持 `mock`、`openai-compatible`、`ollama` 和 `local-http`。
 
@@ -67,7 +69,7 @@ learnBusiness 是一个本地优先的业务文档理解工具，用于把散落
 
 `ai` 定义 `AiProvider` 抽象，覆盖图片理解、chunk 摘要、embedding 和问答。当前有确定性的 `MockAiProvider`，以及可执行 HTTP 调用的 `OpenAiCompatibleProvider`、`OllamaProvider` 和 `LocalHttpProvider`。`AiProviderDescriptor` 负责把配置解析成 provider 类型、模型名、是否需要 API key、是否只允许本地地址、是否支持视觉和 embedding。
 
-`AiRuntime` 是统一 AI 网关，持有 `AppConfig`、provider descriptor、workspace 路径和 provider 实例。`ask` 和 `describe-image` 都通过它执行 provider 校验、top-k 上下文控制、chunk 长度截断、外部 provider 脱敏、轻量 token 估算、成功/失败审计和 AI cache 写入。
+`AiRuntime` 是统一 AI 网关，持有 `AppConfig`、provider descriptor、workspace 路径、provider 实例和 trace logger。`ask` 和 `describe-image` 都通过它执行 provider 校验、top-k 上下文控制、chunk 长度截断、外部 provider 脱敏、轻量 token 估算、成功/失败审计、AI cache 写入和结构化追踪。
 
 provider 模块已拆分为：
 
@@ -160,6 +162,7 @@ learnBusiness 的安全边界按“默认本地、外部显式、可审计”设
 - `ollama` 和 `local-http` 强制 `base_url` 指向 loopback 地址；远程本地 provider URL 会在 runtime 创建阶段被拒绝。
 - 图片 base64 只进入 provider 请求体，不进入 `ai_calls` 审计记录或错误分类。
 - provider 错误信息只分类写入审计；日志和审计不保存完整上下文、请求体或 provider 完整返回体。
+- `trace.jsonl` 只记录定位问题所需的元数据、hash、耗时和错误分类，不记录业务正文。
 
 ## 权限模型
 
