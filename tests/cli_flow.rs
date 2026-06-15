@@ -161,3 +161,58 @@ fn inspect_ai_lists_dry_run_image_audit_record() {
         .stdout(predicates::str::contains("describe_image"))
         .stdout(predicates::str::contains("dry_run"));
 }
+
+#[test]
+fn describe_image_dry_run_uses_configured_provider_metadata() {
+    let workspace = tempfile::tempdir().unwrap();
+    let image_dir = tempfile::tempdir().unwrap();
+    let image = image_dir.path().join("diagram.png");
+    std::fs::write(&image, b"not a real png but enough for hashing").unwrap();
+
+    Command::cargo_bin("learnBusiness")
+        .unwrap()
+        .args(["init", workspace.path().to_str().unwrap()])
+        .assert()
+        .success();
+    std::fs::write(
+        workspace
+            .path()
+            .join(".learnBusiness")
+            .join("config")
+            .join("app.toml"),
+        "\
+[ai]
+provider = \"ollama\"
+base_url = \"http://127.0.0.1:11434\"
+chat_model = \"qwen2.5\"
+vision_model = \"llava\"
+embedding_model = \"nomic-embed-text\"
+api_key_env = \"\"
+",
+    )
+    .unwrap();
+
+    Command::cargo_bin("learnBusiness")
+        .unwrap()
+        .args([
+            "describe-image",
+            image.to_str().unwrap(),
+            "--workspace",
+            workspace.path().to_str().unwrap(),
+            "--dry-run-ai",
+        ])
+        .assert()
+        .success();
+
+    Command::cargo_bin("learnBusiness")
+        .unwrap()
+        .args([
+            "inspect-ai",
+            "--workspace",
+            workspace.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("provider=ollama"))
+        .stdout(predicates::str::contains("model=llava"));
+}

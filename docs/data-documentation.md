@@ -23,7 +23,7 @@
   logs/
 ```
 
-`.learnBusiness/config/app.toml` 是运行时配置入口。默认内容包含 `[ai]`、`[safety]` 和 `[performance]` 三类配置：AI 服务地址和模型名、安全开关、问答上下文 chunk 数量、长文本切分上限。配置文件不能保存 `api_key`；真实密钥应通过环境变量或外部密钥管理提供。
+`.learnBusiness/config/app.toml` 是运行时配置入口。默认内容包含 `[ai]`、`[safety]` 和 `[performance]` 三类配置：AI provider 类型、服务地址、模型名、API key 环境变量名、安全开关、问答上下文 chunk 数量、长文本切分上限。配置文件不能保存 `api_key` 值；真实密钥应通过环境变量或外部密钥管理提供。
 
 `.learnBusiness/metadata.sqlite` 是当前已实现的核心数据文件，保存文档元数据、chunk、FTS5 全文索引和 AI 调用审计记录。`.learnBusiness/cache/ai/` 用于保存 AI 缓存结果；`.learnBusiness/artifacts/`、`.learnBusiness/cache/extraction/`、`.learnBusiness/logs/` 目前由初始化流程创建，主要作为后续图片、页面、缩略图、抽取中间结果和日志的隔离位置。
 
@@ -139,6 +139,7 @@ learnBusiness 当前使用三类稳定标识：
 
 - 不提交 `.learnBusiness/`，包括 `metadata.sqlite`、FTS5 索引、AI cache、artifacts、logs 和 extraction cache。
 - `.learnBusiness/config/app.toml` 不保存 `api_key`、访问令牌或个人账号凭据。
+- 本地模型 provider 使用 `ollama` 或 `local-http` 时，`base_url` 必须是 localhost 地址，避免把本地资料误发到远程服务。
 - AI 调用审计只保存 hash、模型、用途、状态、token 估算和脱敏标记等元数据。
 - 普通日志不记录业务原文、AI prompt、AI 完整回答、图片内容或密钥。
 - `chunks.text` 和 `chunks_fts.text` 是最高敏数据，应按业务文档原文处理。

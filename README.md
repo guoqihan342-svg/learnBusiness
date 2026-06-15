@@ -36,7 +36,7 @@ cargo run --bin learnBusiness -- report --workspace .\workspace --out report.md
 - 文本抽取：支持纯文本、Markdown 和基础 PDF 文本抽取。
 - 轻量分片：长文本按固定上限切成小 chunk，避免问答上下文过大。
 - 本地索引：使用 SQLite 保存文档、chunk 和 AI 调用记录，并使用 FTS5 做全文检索。
-- 问答：只取少量相关 chunk 调用 mock AI provider，并输出来源引用。
+- 问答：只取少量相关 chunk 调用配置指定的 AI provider，并输出来源引用。
 - 报告：生成包含执行摘要、资料集概览、流程候选和来源引用的 Markdown 报告。
 - 图片 dry-run：`describe-image --dry-run-ai` 可显示将发送给 AI 的图片 hash 和 MIME 类型。
 
@@ -44,7 +44,7 @@ cargo run --bin learnBusiness -- report --workspace .\workspace --out report.md
 
 - 默认不发送原始文件到外部服务。
 - 配置文件不保存 API key；真实密钥应走环境变量或外部密钥管理。
-- 外部 AI provider 当前只有骨架，缺少 API key 会返回明确错误。
+- AI provider 当前支持 `mock`、`openai-compatible`、`ollama`、`local-http` 四类配置入口；本地 provider 仅允许 localhost 地址，外部 provider 缺少 API key 会返回明确错误。
 - `describe-image --dry-run-ai` 只展示调用计划，不执行 AI 调用。
 - 未变化文件按内容 hash 跳过，避免重复抽取和重复 AI 调用。
 - 问答只发送配置指定数量的 top-k 相关 chunk，默认 5，避免把整份文档塞进上下文。

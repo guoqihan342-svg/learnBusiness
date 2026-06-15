@@ -271,6 +271,7 @@ base_url = "https://api.openai.com/v1"
 chat_model = "gpt-4o-mini"
 vision_model = "gpt-4o-mini"
 embedding_model = "text-embedding-3-small"
+api_key_env = "OPENAI_API_KEY"
 
 [safety]
 redact_before_external_ai = true
@@ -283,19 +284,47 @@ chunk_char_limit = 1600
 
 字段说明：
 
-- `[ai].provider`：AI 提供方名称。当前默认 `mock`，用于本地验证。
-- `[ai].base_url`：预留给 OpenAI 兼容接口的基础地址。
+- `[ai].provider`：AI 提供方名称。当前支持 `mock`、`openai-compatible`、`ollama`、`local-http`。
+- `[ai].base_url`：AI 服务基础地址。`ollama` 和 `local-http` 必须使用 `localhost`、`127.0.0.1` 或 `[::1]`，避免误连外部地址。
 - `[ai].chat_model`：预留的文本问答模型名。
 - `[ai].vision_model`：预留的视觉模型名。
 - `[ai].embedding_model`：预留的向量模型名。
+- `[ai].api_key_env`：外部 AI 的 API key 环境变量名。配置文件只保存变量名，不保存密钥值。本地 provider 可设为空字符串。
 - `[safety].redact_before_external_ai`：接入外部 AI 前的脱敏开关，默认开启。
 - `[safety].dry_run_ai`：AI dry-run 默认开关；命令行 `--dry-run-ai` 可用于单次图片检查。
 - `[performance].context_chunks`：问答 top-k 内容块数量，默认 5。运行时会读取这个值；当前实现会把有效值限制在 1 到 20 之间，避免一次发送过多上下文。
 - `[performance].chunk_char_limit`：导入时单个 chunk 的字符上限，默认 1600。
 
+本地 Ollama 预留配置示例：
+
+```toml
+[ai]
+provider = "ollama"
+base_url = "http://127.0.0.1:11434"
+chat_model = "qwen2.5"
+vision_model = "llava"
+embedding_model = "nomic-embed-text"
+api_key_env = ""
+```
+
+通用本地 HTTP 网关预留配置示例：
+
+```toml
+[ai]
+provider = "local-http"
+base_url = "http://127.0.0.1:8000/v1"
+chat_model = "local-chat"
+vision_model = "local-vision"
+embedding_model = "local-embedding"
+api_key_env = ""
+```
+
+当前版本已经能读取这些配置、写入 dry-run 审计元数据，并为 `ask` 和 `describe-image` 建立 provider 工厂入口；真实本地 HTTP 协议调用仍需后续按具体模型服务实现。
+
 安全建议：
 
 - 不要把 API key 写进 `.learnBusiness/config/app.toml`。
+- 本地模型建议使用 `provider = "ollama"` 或 `provider = "local-http"`，并把 `base_url` 限制在 localhost。
 - 不要把 `.learnBusiness/` 提交到仓库。
 - 修改 `context_chunks` 前先评估 token 成本；数值越大，上下文越多，成本和泄露面也越大。
 - 修改 `chunk_char_limit` 前先评估检索质量；过大容易浪费 token，过小可能切碎业务语义。

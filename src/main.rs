@@ -3,8 +3,8 @@ use std::path::PathBuf;
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use learn_business::ai::cache::AiCacheKey;
-use learn_business::ai::{AiProvider, ImageInput, MockAiProvider};
-use learn_business::config::APP_NAME;
+use learn_business::ai::{AiProvider, ImageInput, api_key_from_env, provider_from_config};
+use learn_business::config::{APP_NAME, AppConfig};
 use learn_business::discover::{guess_file_type, sha256_file};
 use learn_business::ingest::run_ingest;
 use learn_business::qa::answer_workspace;
@@ -115,13 +115,14 @@ fn describe_image_command(
     dry_run_ai: bool,
 ) -> Result<()> {
     let workspace = Workspace::open(&workspace_root);
+    let config = AppConfig::load_or_default(workspace.config_path())?;
     let store = MetadataStore::open(workspace.metadata_db_path())?;
     let content_hash = sha256_file(&image_path)?;
     let mime_type = guess_file_type(&image_path);
     if dry_run_ai {
         store.insert_ai_call(&AiCallRecord::new(
-            "mock",
-            "mock-ai",
+            &config.ai.provider,
+            &config.ai.vision_model,
             "describe_image",
             &content_hash,
             "dry_run",
@@ -136,18 +137,18 @@ fn describe_image_command(
     }
 
     let image = ImageInput::new(&image_path, mime_type, &content_hash);
-    let provider = MockAiProvider::default();
+    let provider = provider_from_config(&config.ai, api_key_from_env(&config.ai))?;
     let understanding =
         provider.describe_image(&image, "请描述这张业务图片中的流程、角色和关键信息。")?;
     store.insert_ai_call(&AiCallRecord::new(
-        "mock",
+        &config.ai.provider,
         &understanding.model,
         "describe_image",
         &content_hash,
         "completed",
     ))?;
     let cache_key = AiCacheKey::new(
-        "mock",
+        &config.ai.provider,
         &understanding.model,
         "describe_image",
         "v1",

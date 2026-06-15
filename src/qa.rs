@@ -1,6 +1,6 @@
 use anyhow::Result;
 
-use crate::ai::{AiProvider, AiTextChunk, MockAiProvider};
+use crate::ai::{AiProvider, AiTextChunk, MockAiProvider, api_key_from_env, provider_from_config};
 use crate::config::{AppConfig, DEFAULT_CONTEXT_CHUNKS};
 use crate::store::{MetadataStore, SearchResult};
 use crate::workspace::Workspace;
@@ -66,7 +66,8 @@ pub fn answer_workspace(
     let workspace = Workspace::open(workspace_root);
     let config = AppConfig::load_or_default(workspace.config_path())?;
     let store = MetadataStore::open(workspace.metadata_db_path())?;
-    QaEngine::default()
+    let provider = provider_from_config(&config.ai, api_key_from_env(&config.ai))?;
+    QaEngine::new(provider)
         .with_context_chunks(config.performance.context_chunks)
         .answer(&store, question)
 }

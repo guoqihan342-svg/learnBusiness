@@ -13,7 +13,7 @@
 - 建立本地索引，支持关键词搜索、来源引用、报告生成和问答。
 - 只在有价值时调用 AI：图片理解、扫描页理解、复杂表格解释、摘要、报告生成和基于索引的问答。
 - 用稳定内容 hash 缓存 AI 调用，避免重复花 token。
-- 通过 provider trait 支持 OpenAI-compatible 多模态和 embedding API。
+- 通过 provider trait 支持 OpenAI-compatible、多模态、本地 Ollama、本地 HTTP 网关和 embedding API。
 - 为 MCP 工具和业务领域 skill 预留扩展点。
 - 默认让原始文件留在本地，除非某次配置过的 AI 或 MCP 调用明确需要发送选中的内容。
 
@@ -123,7 +123,7 @@ AiCall
 
 ## 扩展点
 
-- AI provider：OpenAI-compatible HTTP API、企业 AI 网关、本地模型网关。
+- AI provider：mock、OpenAI-compatible HTTP API、Ollama、本地 HTTP 网关、企业 AI 网关。
 - MCP：连接 stdio 或 SSE MCP server，调用前执行权限检查。
 - Skill：提供领域 prompt、报告章节、实体定义和问题清单，例如保险业务、供应链业务、金融风控。
 
@@ -135,6 +135,6 @@ AiCall
 - 文本抽取：文本、Markdown、基础 PDF。
 - 本地索引：SQLite + FTS5。
 - 轻量分片：长文本定长切分。
-- 问答：基于本地全文检索和 mock AI provider。
+- 问答：基于本地全文检索和配置指定的 AI provider；默认使用 mock，本地模型 provider 已预留。
 - 图片入口：支持 dry-run 和 AI 调用审计记录。
 - 报告：生成中文 Markdown 报告。

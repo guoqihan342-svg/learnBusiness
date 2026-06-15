@@ -1,6 +1,6 @@
 # learnBusiness 实现计划
 
-**目标：** 构建一个 Rust CLI 纵向切片，支持本地业务文档目录初始化、文件发现、文本/PDF 抽取、SQLite 元数据和全文检索、mock AI、OpenAI-compatible provider 骨架、图片描述入口、问答和基础报告。
+**目标：** 构建一个 Rust CLI 纵向切片，支持本地业务文档目录初始化、文件发现、文本/PDF 抽取、SQLite 元数据和全文检索、mock AI、OpenAI-compatible provider 骨架、本地模型 provider 骨架、图片描述入口、问答和基础报告。
 
 **项目名：** 用户可见名称和 CLI 二进制为 `learnBusiness`；Cargo 包名使用 Rust 规范形式 `learn-business`，lib crate 名为 `learn_business`。
 
@@ -24,7 +24,7 @@
 - `src/store.rs`：SQLite schema、元数据写入、FTS5 全文搜索。
 - `src/ingest/mod.rs`：ingest pipeline、重复导入跳过、长文本分片。
 - `src/ingest/extract.rs`：txt/md/pdf/image 基础抽取。
-- `src/ai/mod.rs`：`AiProvider` trait、mock provider、OpenAI-compatible provider 骨架。
+- `src/ai/mod.rs`：`AiProvider` trait、mock provider、OpenAI-compatible、Ollama、本地 HTTP provider 骨架和 provider descriptor。
 - `src/ai/cache.rs`：AI cache key。
 - `src/ai/redaction.rs`：本地脱敏。
 - `src/qa.rs`：基于本地检索的问答。
@@ -44,7 +44,7 @@
 - [x] 未变化文件重复 ingest 时跳过。
 - [x] 文件变更后清理旧 chunk，避免旧内容残留。
 - [x] 长文本按固定上限切成小 chunk，降低上下文和 FTS 膨胀。
-- [x] 加入 AI provider trait、mock provider、缓存 key 和脱敏模块。
+- [x] 加入 AI provider trait、mock provider、OpenAI-compatible、Ollama、本地 HTTP provider 骨架、缓存 key 和脱敏模块。
 - [x] `ask` 只基于命中 chunk 调用 AI；无命中时不发送任意业务内容。
 - [x] `describe-image --dry-run-ai` 写入 AI 调用审计记录。
 - [x] 生成中文业务理解报告。
@@ -53,7 +53,7 @@
 ## 后续增强
 
 - [ ] 从 `.learnBusiness/config/app.toml` 读取用户覆盖配置。
-- [ ] 真实接入 OpenAI-compatible 多模态接口，密钥只走环境变量。
+- [ ] 真实接入 OpenAI-compatible、Ollama 和本地 HTTP 多模态接口，密钥只走环境变量或本地服务配置。
 - [ ] 加入 DOCX/PPTX 深度抽取。
 - [ ] 加入 OCR 或页面截图理解。
 - [ ] 增加向量索引或轻量本地 embedding cache。
