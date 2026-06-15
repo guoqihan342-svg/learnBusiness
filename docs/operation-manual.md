@@ -145,7 +145,7 @@ learnBusiness ingest .\samples\docs --workspace .\workspace
 
 - 文件内容 hash：相同内容重复导入时跳过，减少重复提取和后续 AI 处理。
 - 文本 chunk：长文本默认按约 1600 字符切成较小内容块，避免整份文档进入上下文。
-- top-k 检索：问答默认只取最相关的 5 个内容块，不把整批资料发送给 AI。
+- top-k 检索：问答默认只取最相关的 5 个内容块；可通过 `.learnBusiness/config/app.toml` 的 `context_chunks` 调整，不把整批资料发送给 AI。
 
 查看工作区状态：
 
@@ -290,7 +290,7 @@ chunk_char_limit = 1600
 - `[ai].embedding_model`：预留的向量模型名。
 - `[safety].redact_before_external_ai`：接入外部 AI 前的脱敏开关，默认开启。
 - `[safety].dry_run_ai`：AI dry-run 默认开关；命令行 `--dry-run-ai` 可用于单次图片检查。
-- `[performance].context_chunks`：问答 top-k 内容块数量，默认 5。
+- `[performance].context_chunks`：问答 top-k 内容块数量，默认 5。运行时会读取这个值；当前实现会把有效值限制在 1 到 20 之间，避免一次发送过多上下文。
 - `[performance].chunk_char_limit`：导入时单个 chunk 的字符上限，默认 1600。
 
 安全建议：
@@ -356,7 +356,7 @@ learnBusiness status --workspace .\workspace
 
 ### 如何降低 token 成本？
 
-优先保持默认配置：`context_chunks = 5`、`chunk_char_limit = 1600`。导入时依靠 hash 跳过未变化文件，问答时依靠 top-k 只取相关 chunk。不要为了“答案更全”盲目提高 `context_chunks`，应先改进资料结构和提问关键词。
+优先保持默认配置：`context_chunks = 5`、`chunk_char_limit = 1600`。导入时依靠 hash 跳过未变化文件，问答时依靠 top-k 只取相关 chunk。需要更大上下文时可以调高 `context_chunks`，但不要为了“答案更全”盲目提高，应先改进资料结构和提问关键词。
 
 ### 如何确认有没有发生 AI 调用？
 

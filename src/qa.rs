@@ -1,7 +1,7 @@
 use anyhow::Result;
 
 use crate::ai::{AiProvider, AiTextChunk, MockAiProvider};
-use crate::config::DEFAULT_CONTEXT_CHUNKS;
+use crate::config::{AppConfig, DEFAULT_CONTEXT_CHUNKS};
 use crate::store::{MetadataStore, SearchResult};
 use crate::workspace::Workspace;
 
@@ -13,23 +13,33 @@ pub struct QaAnswer {
 
 pub struct QaEngine<P: AiProvider> {
     provider: P,
+    context_chunks: usize,
 }
 
 impl Default for QaEngine<MockAiProvider> {
     fn default() -> Self {
         Self {
             provider: MockAiProvider::default(),
+            context_chunks: DEFAULT_CONTEXT_CHUNKS,
         }
     }
 }
 
 impl<P: AiProvider> QaEngine<P> {
     pub fn new(provider: P) -> Self {
-        Self { provider }
+        Self {
+            provider,
+            context_chunks: DEFAULT_CONTEXT_CHUNKS,
+        }
+    }
+
+    pub fn with_context_chunks(mut self, context_chunks: usize) -> Self {
+        self.context_chunks = context_chunks;
+        self
     }
 
     pub fn answer(&self, store: &MetadataStore, question: &str) -> Result<QaAnswer> {
-        let results = store.search_text(question, DEFAULT_CONTEXT_CHUNKS)?;
+        let results = store.search_text(question, self.context_chunks)?;
         if results.is_empty() {
             return Ok(QaAnswer {
                 answer: "未找到相关来源。".to_string(),
@@ -54,8 +64,11 @@ pub fn answer_workspace(
     question: &str,
 ) -> Result<QaAnswer> {
     let workspace = Workspace::open(workspace_root);
+    let config = AppConfig::load_or_default(workspace.config_path())?;
     let store = MetadataStore::open(workspace.metadata_db_path())?;
-    QaEngine::default().answer(&store, question)
+    QaEngine::default()
+        .with_context_chunks(config.performance.context_chunks)
+        .answer(&store, question)
 }
 
 fn unique_sources(results: &[SearchResult]) -> Vec<String> {
@@ -141,5 +154,41 @@ mod tests {
             .unwrap();
         assert!(answer.sources.is_empty());
         assert!(answer.answer.contains("未找到相关来源"));
+    }
+
+    #[test]
+    fn answer_workspace_uses_configured_context_chunk_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = Workspace::init(dir.path()).unwrap();
+        std::fs::write(
+            workspace.config_path(),
+            "\
+[performance]
+context_chunks = 1
+chunk_char_limit = 1600
+",
+        )
+        .unwrap();
+
+        let store = MetadataStore::open(workspace.metadata_db_path()).unwrap();
+        for index in 1..=2 {
+            let doc_id = format!("doc-{index}");
+            let path = format!("process-{index}.txt");
+            let doc = DocumentRecord::new_for_test(&doc_id, &path, "text/plain");
+            store.upsert_document(&doc).unwrap();
+            store
+                .insert_chunk(
+                    &format!("chunk-{index}"),
+                    &doc_id,
+                    "text",
+                    "共同流程包含客户申请和运营审核。",
+                    None,
+                    None,
+                )
+                .unwrap();
+        }
+
+        let answer = answer_workspace(dir.path(), "共同流程是什么？").unwrap();
+        assert_eq!(answer.sources.len(), 1);
     }
 }

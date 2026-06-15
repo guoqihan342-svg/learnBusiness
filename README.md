@@ -47,7 +47,7 @@ cargo run --bin learnBusiness -- report --workspace .\workspace --out report.md
 - 外部 AI provider 当前只有骨架，缺少 API key 会返回明确错误。
 - `describe-image --dry-run-ai` 只展示调用计划，不执行 AI 调用。
 - 未变化文件按内容 hash 跳过，避免重复抽取和重复 AI 调用。
-- 问答只发送 top-k 相关 chunk，不把整份文档塞进上下文。
+- 问答只发送配置指定数量的 top-k 相关 chunk，默认 5，避免把整份文档塞进上下文。
 - 脱敏模块已覆盖邮箱、中国大陆手机号、长数字和 `sk-` 样式密钥。
 
 ## 文档

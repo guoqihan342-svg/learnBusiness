@@ -129,7 +129,7 @@ learnBusiness 当前使用三类稳定标识：
 
 ## 问答来源引用
 
-`ask` 会先在 `chunks_fts` 中搜索问题相关内容，默认只取 `DEFAULT_CONTEXT_CHUNKS = 5` 个命中 chunk。没有命中时，问答流程直接返回无来源结果，并且不会调用 AI。
+`ask` 会先读取 `.learnBusiness/config/app.toml` 中的 `performance.context_chunks`，再在 `chunks_fts` 中搜索问题相关内容。默认值是 `DEFAULT_CONTEXT_CHUNKS = 5`，用户可在配置文件中调小或调大；当前实现会把有效值限制在安全范围内，避免一次发送过多上下文。没有命中时，问答流程直接返回无来源结果，并且不会调用 AI。
 
 有命中时，learnBusiness 只把命中的 chunk id 和 chunk 文本组成上下文传给 AI provider。回答结果返回后，来源引用来自命中结果中的 `documents.path`，会去重后输出为“来源”。当前用户可见来源是文档路径，不是页码或段落范围；`source_range`、`page` 和 `slide` 等更细粒度引用字段仍是预留方向。
 
