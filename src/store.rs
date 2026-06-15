@@ -583,8 +583,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = MetadataStore::open(dir.path().join("metadata.sqlite")).unwrap();
         let mut record = AiCallRecord::new(
-            "openai-compatible",
-            "gpt-4o-mini",
+            "http",
+            "business-chat",
             "answer",
             "input-hash-only",
             "failed",

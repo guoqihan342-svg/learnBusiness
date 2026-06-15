@@ -565,12 +565,13 @@ mod tests {
 
         let config = AppConfig {
             ai: AiConfig {
-                provider: "openai-compatible".to_string(),
+                provider: "http".to_string(),
                 base_url: "https://gateway.example.com/v1".to_string(),
                 chat_model: "chat".to_string(),
                 vision_model: "vision".to_string(),
                 embedding_model: "embedding".to_string(),
                 api_key_env: "LEARNBUSINESS_TEST_KEY".to_string(),
+                headers: Default::default(),
             },
             safety: SafetyConfig::default(),
             performance: PerformanceConfig::default(),

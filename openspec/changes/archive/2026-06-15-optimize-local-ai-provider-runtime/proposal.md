@@ -1,31 +1,25 @@
-## Why
+# 提案：优化 AI Provider Runtime
 
-learnBusiness 已经有 `AiProvider` trait、provider descriptor 和 `mock/openai-compatible/ollama/local-http` 配置入口，但非 mock provider 仍停留在安全骨架，不能真正连接本地模型或 OpenAI-compatible 服务。下一步优化需要先用 OpenSpec 固化运行时契约，确保接入本地模型时仍满足本地优先、省 token、可审计和默认安全的要求。
+## 背景
 
-## What Changes
+learnBusiness 需要在业务文档问答、图片理解、摘要和 embedding 场景中接入真实 AI 接口。早期设计区分了多个 provider 名称，容易把 `localhost` 误解为“本地部署大模型”。当前归档后的目标口径是：保留默认 `mock`，真实调用统一通过通用 `http` provider 接入。
 
-- 将 AI provider 运行时从“配置骨架”提升为可执行能力：按 `.learnBusiness/config/app.toml` 选择 provider，并执行对应的 answer、describe_image、summarize_chunks、embed_texts 调用。
-- 增加 Ollama 本地模型连接器，优先支持本地 chat、vision 和 embedding 调用。
-- 增加 OpenAI-compatible / local-http 的统一请求构造层，避免每个调用路径手写 HTTP。
-- 在外部或本地 HTTP 调用前执行安全检查：本地 provider 只允许 localhost，外部 provider 必须从环境变量读取 API key，配置文件禁止保存密钥值。
-- 在调用前应用 token 和上下文预算：只发送已检索的 top-k chunk，截断超限文本，并记录估算 token。
-- 扩展 AI 调用审计：记录 provider、model、purpose、input_hash、output_hash、status、redaction_applied、token_estimate 和错误类别，不记录完整敏感 prompt。
-- 更新中文操作手册、数据文档和架构文档，说明本地模型配置、dry-run、审计和排障路径。
+## 目标
 
-## Capabilities
+- 使用 `provider = "http"` 表示可配置 HTTP AI 接口。
+- `base_url` 完全可配置，可指向 localhost、企业网关或云端接口。
+- 认证和网关参数通过 `[ai.headers]` 配置，请求头值支持 `${ENV_NAME}`。
+- 文本问答、embedding 和多模态图片请求复用同一套 `base_url` 和 headers。
+- 所有 AI 调用继续经过 `AiRuntime`，统一处理脱敏、token 估算、审计、trace 和缓存。
 
-### New Capabilities
+## 非目标
 
-- `ai-provider-runtime`: 规定 AI provider 配置、运行时选择、本地模型连接、安全检查、token 预算、缓存和审计的用户可见行为。
+- 不在配置文件中保存真实密钥值。
+- 不绕过 `AiRuntime` 直接从 CLI 调 provider。
+- 不把 `localhost` 绑定为本地模型语义。
 
-### Modified Capabilities
+## 风险与缓解
 
-- 无。当前仓库没有已归档 OpenSpec capability，本次先新增规格。
-
-## Impact
-
-- 影响代码：`src/ai/mod.rs`、`src/ai/cache.rs`、`src/ai/redaction.rs`、`src/config.rs`、`src/main.rs`、`src/qa.rs`、`src/store.rs`，可能新增 `src/ai/ollama.rs`、`src/ai/http.rs`、`src/ai/runtime.rs`。
-- 影响 CLI：`ask`、`describe-image`、`inspect-ai` 需要反映配置选择、dry-run 预览、错误状态和审计记录。
-- 影响配置：`.learnBusiness/config/app.toml` 的 `[ai]` 字段成为运行时行为来源，API key 只允许通过 `api_key_env` 指向环境变量。
-- 影响安全：本地 provider 必须限制在 localhost；外部 provider 必须显式使用环境变量密钥；日志和审计禁止保存完整 prompt 或业务原文。
-- 影响文档：README、操作手册、数据文档、架构文档、OpenSpec 设计和任务需要同步。
+- 风险：配置头部可能包含敏感值。缓解：文档推荐 `${ENV_NAME}`，日志和审计不记录 header 值。
+- 风险：不同 HTTP 服务协议不完全兼容。缓解：当前默认 chat completions/embeddings 兼容 JSON 形状，后续通过 adapter 扩展。
+- 风险：远程调用泄漏业务内容。缓解：远程 HTTP provider 默认启用脱敏，并且只发送 top-k chunk。

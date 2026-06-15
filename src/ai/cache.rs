@@ -63,8 +63,8 @@ mod tests {
 
     #[test]
     fn ai_cache_key_is_deterministic_for_same_inputs() {
-        let a = AiCacheKey::new("ollama", "llava", "describe_image", "v1", "abc", false);
-        let b = AiCacheKey::new("ollama", "llava", "describe_image", "v1", "abc", false);
+        let a = AiCacheKey::new("http", "vision", "describe_image", "v1", "abc", false);
+        let b = AiCacheKey::new("http", "vision", "describe_image", "v1", "abc", false);
 
         assert_eq!(a.to_filename(), b.to_filename());
         assert_eq!(a.to_filename().len(), 69);
@@ -76,7 +76,7 @@ mod tests {
         let base = AiCacheKey::new("mock", "model-a", "answer", "v1", "abc", false);
         let base_name = base.to_filename();
         let variants = [
-            AiCacheKey::new("ollama", "model-a", "answer", "v1", "abc", false),
+            AiCacheKey::new("http", "model-a", "answer", "v1", "abc", false),
             AiCacheKey::new("mock", "model-b", "answer", "v1", "abc", false),
             AiCacheKey::new("mock", "model-a", "describe_image", "v1", "abc", false),
             AiCacheKey::new("mock", "model-a", "answer", "v2", "abc", false),

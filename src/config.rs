@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 
@@ -36,7 +37,7 @@ impl AppConfig {
     }
 
     pub fn to_toml_string(&self) -> String {
-        format!(
+        let mut text = format!(
             "\
 [ai]
 provider = \"{}\"
@@ -46,6 +47,25 @@ vision_model = \"{}\"
 embedding_model = \"{}\"
 api_key_env = \"{}\"
 
+[ai.headers]
+",
+            escape_toml_string(&self.ai.provider),
+            escape_toml_string(&self.ai.base_url),
+            escape_toml_string(&self.ai.chat_model),
+            escape_toml_string(&self.ai.vision_model),
+            escape_toml_string(&self.ai.embedding_model),
+            escape_toml_string(&self.ai.api_key_env),
+        );
+        if self.ai.headers.is_empty() {
+            text.push_str("# Authorization = \"Bearer ${LEARNBUSINESS_AI_KEY}\"\n");
+        } else {
+            for (name, value) in &self.ai.headers {
+                text.push_str(&format!("{} = \"{}\"\n", name, escape_toml_string(value)));
+            }
+        }
+
+        text.push_str(&format!(
+            "
 [safety]
 redact_before_external_ai = {}
 dry_run_ai = {}
@@ -57,18 +77,13 @@ chunk_char_limit = {}
 [logging]
 trace_enabled = {}
 ",
-            self.ai.provider,
-            self.ai.base_url,
-            self.ai.chat_model,
-            self.ai.vision_model,
-            self.ai.embedding_model,
-            self.ai.api_key_env,
             self.safety.redact_before_external_ai,
             self.safety.dry_run_ai,
             self.performance.context_chunks,
             self.performance.chunk_char_limit,
             self.logging.trace_enabled
-        )
+        ));
+        text
     }
 }
 
@@ -83,32 +98,37 @@ fn apply_ai_overrides(config: &mut AppConfig, text: &str) {
             section = line.trim_matches(&['[', ']'][..]).trim();
             continue;
         }
-        if section != "ai" {
-            continue;
-        }
-
         let Some((key, value)) = line.split_once('=') else {
             continue;
         };
         let parsed = parse_string_value(value);
-        match key.trim() {
-            "provider" => {
-                config.ai.provider = parsed;
-            }
-            "base_url" => {
-                config.ai.base_url = parsed;
-            }
-            "chat_model" => {
-                config.ai.chat_model = parsed;
-            }
-            "vision_model" => {
-                config.ai.vision_model = parsed;
-            }
-            "embedding_model" => {
-                config.ai.embedding_model = parsed;
-            }
-            "api_key_env" => {
-                config.ai.api_key_env = parsed;
+        match section {
+            "ai" => match key.trim() {
+                "provider" => {
+                    config.ai.provider = parsed;
+                }
+                "base_url" => {
+                    config.ai.base_url = parsed;
+                }
+                "chat_model" => {
+                    config.ai.chat_model = parsed;
+                }
+                "vision_model" => {
+                    config.ai.vision_model = parsed;
+                }
+                "embedding_model" => {
+                    config.ai.embedding_model = parsed;
+                }
+                "api_key_env" => {
+                    config.ai.api_key_env = parsed;
+                }
+                _ => {}
+            },
+            "ai.headers" => {
+                let header_name = parse_key_name(key);
+                if !header_name.is_empty() {
+                    config.ai.headers.insert(header_name, parsed);
+                }
             }
             _ => {}
         }
@@ -193,6 +213,14 @@ fn parse_string_value(value: &str) -> String {
         .to_string()
 }
 
+fn parse_key_name(key: &str) -> String {
+    key.trim().trim_matches('"').trim_matches('\'').to_string()
+}
+
+fn escape_toml_string(value: &str) -> String {
+    value.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
 fn parse_bool_value(value: &str) -> Option<bool> {
     match value
         .split('#')
@@ -217,17 +245,19 @@ pub struct AiConfig {
     pub vision_model: String,
     pub embedding_model: String,
     pub api_key_env: String,
+    pub headers: BTreeMap<String, String>,
 }
 
 impl Default for AiConfig {
     fn default() -> Self {
         Self {
             provider: "mock".to_string(),
-            base_url: "https://api.openai.com/v1".to_string(),
-            chat_model: "gpt-4o-mini".to_string(),
-            vision_model: "gpt-4o-mini".to_string(),
-            embedding_model: "text-embedding-3-small".to_string(),
-            api_key_env: "OPENAI_API_KEY".to_string(),
+            base_url: "http://localhost:8000/v1".to_string(),
+            chat_model: "business-chat".to_string(),
+            vision_model: "business-vision".to_string(),
+            embedding_model: "business-embedding".to_string(),
+            api_key_env: String::new(),
+            headers: BTreeMap::new(),
         }
     }
 }
@@ -288,7 +318,8 @@ mod tests {
         assert!(config.contains("context_chunks = 5"));
         assert!(config.contains("chunk_char_limit = 1600"));
         assert!(config.contains("trace_enabled = true"));
-        assert!(config.contains("api_key_env = \"OPENAI_API_KEY\""));
+        assert!(config.contains("api_key_env = \"\""));
+        assert!(config.contains("[ai.headers]"));
         assert!(!config.contains("api_key ="));
     }
 
@@ -312,30 +343,64 @@ chunk_char_limit = 1200
     }
 
     #[test]
-    fn loads_local_ai_provider_from_config_file() {
+    fn loads_http_ai_provider_from_config_file() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("app.toml");
         std::fs::write(
             &path,
             "\
 [ai]
-provider = \"ollama\"
-base_url = \"http://127.0.0.1:11434\"
-chat_model = \"qwen2.5\"
-vision_model = \"llava\"
-embedding_model = \"nomic-embed-text\"
+provider = \"http\"
+base_url = \"http://127.0.0.1:8000/v1\"
+chat_model = \"business-chat\"
+vision_model = \"business-vision\"
+embedding_model = \"business-embedding\"
 api_key_env = \"\"
 ",
         )
         .unwrap();
 
         let config = AppConfig::load_or_default(&path).unwrap();
-        assert_eq!(config.ai.provider, "ollama");
-        assert_eq!(config.ai.base_url, "http://127.0.0.1:11434");
-        assert_eq!(config.ai.chat_model, "qwen2.5");
-        assert_eq!(config.ai.vision_model, "llava");
-        assert_eq!(config.ai.embedding_model, "nomic-embed-text");
+        assert_eq!(config.ai.provider, "http");
+        assert_eq!(config.ai.base_url, "http://127.0.0.1:8000/v1");
+        assert_eq!(config.ai.chat_model, "business-chat");
+        assert_eq!(config.ai.vision_model, "business-vision");
+        assert_eq!(config.ai.embedding_model, "business-embedding");
         assert_eq!(config.ai.api_key_env, "");
+    }
+
+    #[test]
+    fn loads_ai_headers_from_config_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("app.toml");
+        std::fs::write(
+            &path,
+            "\
+[ai]
+provider = \"http\"
+base_url = \"http://localhost:8000/v1\"
+chat_model = \"chat\"
+vision_model = \"vision\"
+embedding_model = \"embedding\"
+api_key_env = \"\"
+
+[ai.headers]
+Authorization = \"Bearer ${LEARNBUSINESS_TEST_KEY}\"
+X-Trace-Source = \"learnBusiness\"
+",
+        )
+        .unwrap();
+
+        let config = AppConfig::load_or_default(&path).unwrap();
+        assert_eq!(config.ai.provider, "http");
+        assert_eq!(
+            config.ai.headers.get("Authorization").map(String::as_str),
+            Some("Bearer ${LEARNBUSINESS_TEST_KEY}")
+        );
+        assert_eq!(
+            config.ai.headers.get("X-Trace-Source").map(String::as_str),
+            Some("learnBusiness")
+        );
     }
 
     #[test]

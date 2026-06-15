@@ -123,7 +123,7 @@ fn describe_image_dry_run_shows_hash_without_ai_call() {
         .success()
         .stdout(predicates::str::contains("dry-run"))
         .stdout(predicates::str::contains("provider=mock"))
-        .stdout(predicates::str::contains("model=gpt-4o-mini"))
+        .stdout(predicates::str::contains("model=business-vision"))
         .stdout(predicates::str::contains("purpose=describe_image"))
         .stdout(predicates::str::contains("input_hash="))
         .stdout(predicates::str::contains("sha256="))
@@ -191,12 +191,15 @@ fn describe_image_dry_run_uses_configured_provider_metadata() {
             .join("app.toml"),
         "\
 [ai]
-provider = \"ollama\"
-base_url = \"http://127.0.0.1:11434\"
-chat_model = \"qwen2.5\"
-vision_model = \"llava\"
-embedding_model = \"nomic-embed-text\"
+provider = \"http\"
+base_url = \"http://127.0.0.1:8000/v1\"
+chat_model = \"business-chat\"
+vision_model = \"business-vision\"
+embedding_model = \"business-embedding\"
 api_key_env = \"\"
+
+[ai.headers]
+Authorization = \"Bearer ${LEARNBUSINESS_TEST_KEY}\"
 ",
     )
     .unwrap();
@@ -222,12 +225,12 @@ api_key_env = \"\"
         ])
         .assert()
         .success()
-        .stdout(predicates::str::contains("provider=ollama"))
-        .stdout(predicates::str::contains("model=llava"));
+        .stdout(predicates::str::contains("provider=http"))
+        .stdout(predicates::str::contains("model=business-vision"));
 }
 
 #[test]
-fn describe_image_dry_run_validates_local_provider_base_url() {
+fn describe_image_dry_run_rejects_invalid_http_base_url() {
     let workspace = tempfile::tempdir().unwrap();
     let image_dir = tempfile::tempdir().unwrap();
     let image = image_dir.path().join("diagram.png");
@@ -246,11 +249,11 @@ fn describe_image_dry_run_validates_local_provider_base_url() {
             .join("app.toml"),
         "\
 [ai]
-provider = \"ollama\"
-base_url = \"https://model.example.com/v1\"
-chat_model = \"qwen2.5\"
-vision_model = \"llava\"
-embedding_model = \"nomic-embed-text\"
+provider = \"http\"
+base_url = \"file:///tmp/model\"
+chat_model = \"business-chat\"
+vision_model = \"business-vision\"
+embedding_model = \"business-embedding\"
 api_key_env = \"\"
 ",
     )
@@ -267,7 +270,7 @@ api_key_env = \"\"
         ])
         .assert()
         .failure()
-        .stderr(predicates::str::contains("localhost"));
+        .stderr(predicates::str::contains("http or https"));
 
     Command::cargo_bin("learnBusiness")
         .unwrap()
@@ -314,7 +317,7 @@ fn inspect_ai_lists_failed_provider_error_category() {
             .join("app.toml"),
         "\
 [ai]
-provider = \"openai-compatible\"
+provider = \"http\"
 base_url = \"https://gateway.example.com/v1\"
 chat_model = \"gpt-4o-mini\"
 vision_model = \"gpt-4o-mini\"

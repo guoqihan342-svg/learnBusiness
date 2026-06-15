@@ -1,21 +1,20 @@
+use std::net::IpAddr;
 use std::path::PathBuf;
 use std::{env, result};
 
-use anyhow::{Result, bail, ensure};
+use anyhow::{Context, Result, bail, ensure};
+use reqwest::Url;
 
+use crate::ai::http::HttpRequestHeader;
 use crate::config::AiConfig;
 
 pub mod cache;
 pub mod http;
-pub mod local_http;
-pub mod ollama;
-pub mod openai;
+pub mod http_provider;
 pub mod redaction;
 pub mod runtime;
 
-pub use local_http::LocalHttpProvider;
-pub use ollama::OllamaProvider;
-pub use openai::OpenAiCompatibleProvider;
+pub use http_provider::{HttpAiProvider, OpenAiCompatibleProvider};
 pub use runtime::{AiRuntime, ImageDescriptionResult, estimate_tokens};
 
 pub trait AiProvider {
@@ -185,24 +184,45 @@ pub fn api_key_from_env(config: &AiConfig) -> Option<String> {
     })
 }
 
+pub fn headers_from_config(config: &AiConfig) -> Result<Vec<HttpRequestHeader>> {
+    let mut headers = Vec::with_capacity(config.headers.len() + 1);
+    let has_authorization = config
+        .headers
+        .keys()
+        .any(|name| name.eq_ignore_ascii_case("authorization"));
+
+    if !has_authorization && let Some(api_key_env) = non_empty_string(&config.api_key_env) {
+        let api_key = env::var(&api_key_env)
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+            .with_context(|| {
+                format!("API key/header environment variable '{api_key_env}' is not set or empty")
+            })?;
+        headers.push(HttpRequestHeader::new(
+            "Authorization",
+            format!("Bearer {api_key}"),
+        )?);
+    }
+
+    for (name, value_template) in &config.headers {
+        let value = expand_env_placeholders(value_template)?;
+        headers.push(HttpRequestHeader::new(name, value)?);
+    }
+    Ok(headers)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AiProviderKind {
     Mock,
-    OpenAiCompatible,
-    Ollama,
-    LocalHttp,
+    Http,
 }
 
 impl AiProviderKind {
     pub fn parse(provider: &str) -> Result<Self> {
         match provider.trim().to_ascii_lowercase().as_str() {
             "mock" => Ok(Self::Mock),
-            "openai" | "openai-compatible" | "openai_compatible" => Ok(Self::OpenAiCompatible),
-            "ollama" => Ok(Self::Ollama),
-            "local-http" | "local_http" | "local" => Ok(Self::LocalHttp),
-            other => bail!(
-                "unsupported AI provider '{other}'; supported providers: mock, openai-compatible, ollama, local-http"
-            ),
+            "http" | "openai" | "openai-compatible" | "openai_compatible" => Ok(Self::Http),
+            other => bail!("unsupported AI provider '{other}'; supported providers: mock, http"),
         }
     }
 }
@@ -225,15 +245,15 @@ pub struct AiProviderDescriptor {
 impl AiProviderDescriptor {
     pub fn from_config(config: &AiConfig) -> Result<Self> {
         let kind = AiProviderKind::parse(&config.provider)?;
-        let local_only = matches!(kind, AiProviderKind::Ollama | AiProviderKind::LocalHttp);
-        if local_only {
-            ensure!(
-                is_local_base_url(&config.base_url),
-                "local AI providers must use a localhost base_url"
-            );
+        if matches!(kind, AiProviderKind::Http) {
+            ensure_valid_http_base_url(&config.base_url)?;
         }
 
-        let requires_api_key = matches!(kind, AiProviderKind::OpenAiCompatible);
+        let requires_api_key = non_empty_string(&config.api_key_env).is_some()
+            && !config
+                .headers
+                .keys()
+                .any(|name| name.eq_ignore_ascii_case("authorization"));
         Ok(Self {
             kind,
             provider: config.provider.clone(),
@@ -243,7 +263,8 @@ impl AiProviderDescriptor {
             embedding_model: config.embedding_model.clone(),
             api_key_env: non_empty_string(&config.api_key_env),
             requires_api_key,
-            local_only,
+            local_only: matches!(kind, AiProviderKind::Http)
+                && is_loopback_base_url(&config.base_url),
             supports_vision: true,
             supports_embeddings: true,
         })
@@ -252,16 +273,12 @@ impl AiProviderDescriptor {
 
 pub fn provider_from_config(
     config: &AiConfig,
-    api_key: Option<String>,
+    _api_key: Option<String>,
 ) -> Result<Box<dyn AiProvider>> {
     let descriptor = AiProviderDescriptor::from_config(config)?;
     match descriptor.kind {
         AiProviderKind::Mock => Ok(Box::new(MockAiProvider::default())),
-        AiProviderKind::OpenAiCompatible => Ok(Box::new(OpenAiCompatibleProvider::from_config(
-            config, api_key,
-        ))),
-        AiProviderKind::Ollama => Ok(Box::new(OllamaProvider::from_config(config))),
-        AiProviderKind::LocalHttp => Ok(Box::new(LocalHttpProvider::from_config(config))),
+        AiProviderKind::Http => Ok(Box::new(HttpAiProvider::from_config(config))),
     }
 }
 
@@ -274,11 +291,54 @@ fn non_empty_string(value: &str) -> Option<String> {
     }
 }
 
-fn is_local_base_url(base_url: &str) -> bool {
-    let normalized = base_url.trim().to_ascii_lowercase();
-    normalized.starts_with("http://localhost:")
-        || normalized.starts_with("http://127.0.0.1:")
-        || normalized.starts_with("http://[::1]:")
+fn ensure_valid_http_base_url(base_url: &str) -> Result<()> {
+    let url = Url::parse(base_url.trim()).context("AI base_url must be a valid URL")?;
+    ensure!(
+        matches!(url.scheme(), "http" | "https"),
+        "AI base_url must use http or https"
+    );
+    ensure!(url.host_str().is_some(), "AI base_url must include a host");
+    Ok(())
+}
+
+fn is_loopback_base_url(base_url: &str) -> bool {
+    let Ok(url) = Url::parse(base_url.trim()) else {
+        return false;
+    };
+    let Some(host) = url.host_str() else {
+        return false;
+    };
+    if host.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+    host.parse::<IpAddr>().is_ok_and(|ip| ip.is_loopback())
+}
+
+fn expand_env_placeholders(value: &str) -> Result<String> {
+    let mut output = String::new();
+    let mut rest = value;
+    while let Some(start) = rest.find("${") {
+        output.push_str(&rest[..start]);
+        let after_start = &rest[start + 2..];
+        let Some(end) = after_start.find('}') else {
+            bail!("AI header environment placeholder is missing closing brace");
+        };
+        let env_name = &after_start[..end];
+        ensure!(
+            !env_name.trim().is_empty(),
+            "AI header environment placeholder is empty"
+        );
+        let env_value = env::var(env_name)
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+            .with_context(|| {
+                format!("API key/header environment variable '{env_name}' is not set or empty")
+            })?;
+        output.push_str(&env_value);
+        rest = &after_start[end + 1..];
+    }
+    output.push_str(rest);
+    Ok(output)
 }
 
 #[cfg(test)]
@@ -301,63 +361,137 @@ mod tests {
     }
 
     #[test]
-    fn openai_provider_requires_api_key_before_network() {
-        let provider = OpenAiCompatibleProvider::new(
-            "https://api.example.test/v1",
-            None,
-            "chat",
-            "vision",
-            "embedding",
-        );
+    fn http_provider_reports_missing_api_key_env_before_network() {
+        unsafe {
+            env::remove_var("LEARNBUSINESS_MISSING_API_KEY");
+        }
+        let config = AiConfig {
+            provider: "http".to_string(),
+            base_url: "https://api.example.test/v1".to_string(),
+            chat_model: "chat".to_string(),
+            vision_model: "vision".to_string(),
+            embedding_model: "embedding".to_string(),
+            api_key_env: "LEARNBUSINESS_MISSING_API_KEY".to_string(),
+            headers: Default::default(),
+        };
+        let provider = HttpAiProvider::from_config(&config);
 
         let error = provider.answer("question", &[]).unwrap_err().to_string();
-        assert!(error.contains("requires an API key"));
+        assert!(error.contains("LEARNBUSINESS_MISSING_API_KEY"));
     }
 
     #[test]
-    fn ollama_descriptor_is_local_multimodal_without_api_key() {
+    fn http_descriptor_accepts_configurable_base_url_without_local_model_semantics() {
         let config = AiConfig {
-            provider: "ollama".to_string(),
-            base_url: "http://127.0.0.1:11434".to_string(),
-            chat_model: "qwen2.5".to_string(),
-            vision_model: "llava".to_string(),
-            embedding_model: "nomic-embed-text".to_string(),
+            provider: "http".to_string(),
+            base_url: "http://localhost:8000/v1".to_string(),
+            chat_model: "business-chat".to_string(),
+            vision_model: "business-vision".to_string(),
+            embedding_model: "business-embedding".to_string(),
             api_key_env: String::new(),
+            headers: Default::default(),
         };
 
         let descriptor = AiProviderDescriptor::from_config(&config).unwrap();
-        assert_eq!(descriptor.kind, AiProviderKind::Ollama);
+        assert_eq!(descriptor.kind, AiProviderKind::Http);
+        assert_eq!(descriptor.base_url, "http://localhost:8000/v1");
         assert!(descriptor.local_only);
+        assert!(!descriptor.requires_api_key);
         assert!(descriptor.supports_vision);
         assert!(descriptor.supports_embeddings);
-        assert!(!descriptor.requires_api_key);
+
+        let remote = AiConfig {
+            base_url: "https://gateway.example.com/v1".to_string(),
+            ..config
+        };
+        let descriptor = AiProviderDescriptor::from_config(&remote).unwrap();
+        assert_eq!(descriptor.kind, AiProviderKind::Http);
+        assert!(!descriptor.local_only);
+    }
+
+    #[test]
+    fn http_headers_expand_environment_placeholders() {
+        let env_name = "LEARNBUSINESS_HEADER_TEST_KEY";
+        unsafe {
+            env::set_var(env_name, "secret-from-env");
+        }
+        let mut headers = std::collections::BTreeMap::new();
+        headers.insert(
+            "Authorization".to_string(),
+            "Bearer ${LEARNBUSINESS_HEADER_TEST_KEY}".to_string(),
+        );
+        headers.insert("X-App".to_string(), "learnBusiness".to_string());
+        let config = AiConfig {
+            provider: "http".to_string(),
+            base_url: "http://localhost:8000/v1".to_string(),
+            chat_model: "chat".to_string(),
+            vision_model: "vision".to_string(),
+            embedding_model: "embedding".to_string(),
+            api_key_env: String::new(),
+            headers,
+        };
+
+        let resolved = headers_from_config(&config).unwrap();
+        assert_eq!(resolved[0].name(), "authorization");
+        assert_eq!(resolved[0].value(), "Bearer secret-from-env");
+        assert_eq!(resolved[1].name(), "x-app");
+        assert_eq!(resolved[1].value(), "learnBusiness");
+        unsafe {
+            env::remove_var(env_name);
+        }
+    }
+
+    #[test]
+    fn http_headers_fail_before_network_when_environment_is_missing() {
+        unsafe {
+            env::remove_var("LEARNBUSINESS_MISSING_HEADER_KEY");
+        }
+        let mut headers = std::collections::BTreeMap::new();
+        headers.insert(
+            "Authorization".to_string(),
+            "Bearer ${LEARNBUSINESS_MISSING_HEADER_KEY}".to_string(),
+        );
+        let config = AiConfig {
+            provider: "http".to_string(),
+            base_url: "https://gateway.example.com/v1".to_string(),
+            chat_model: "chat".to_string(),
+            vision_model: "vision".to_string(),
+            embedding_model: "embedding".to_string(),
+            api_key_env: String::new(),
+            headers,
+        };
+
+        let error = headers_from_config(&config).unwrap_err().to_string();
+        assert!(error.contains("LEARNBUSINESS_MISSING_HEADER_KEY"));
     }
 
     #[test]
     fn descriptor_covers_supported_provider_matrix() {
         let mock = AiConfig {
             provider: "mock".to_string(),
-            base_url: "https://api.openai.com/v1".to_string(),
+            base_url: "http://localhost:8000/v1".to_string(),
             chat_model: "chat".to_string(),
             vision_model: "vision".to_string(),
             embedding_model: "embedding".to_string(),
-            api_key_env: "OPENAI_API_KEY".to_string(),
+            api_key_env: String::new(),
+            headers: Default::default(),
         };
         let descriptor = AiProviderDescriptor::from_config(&mock).unwrap();
         assert_eq!(descriptor.kind, AiProviderKind::Mock);
         assert!(!descriptor.local_only);
         assert!(!descriptor.requires_api_key);
 
-        let openai = AiConfig {
-            provider: "openai-compatible".to_string(),
+        let http = AiConfig {
+            provider: "http".to_string(),
             base_url: "https://gateway.example.com/v1".to_string(),
             chat_model: "gpt-4o-mini".to_string(),
             vision_model: "gpt-4o-mini".to_string(),
             embedding_model: "text-embedding-3-small".to_string(),
             api_key_env: "LEARNBUSINESS_API_KEY".to_string(),
+            headers: Default::default(),
         };
-        let descriptor = AiProviderDescriptor::from_config(&openai).unwrap();
-        assert_eq!(descriptor.kind, AiProviderKind::OpenAiCompatible);
+        let descriptor = AiProviderDescriptor::from_config(&http).unwrap();
+        assert_eq!(descriptor.kind, AiProviderKind::Http);
         assert!(!descriptor.local_only);
         assert!(descriptor.requires_api_key);
         assert_eq!(
@@ -365,20 +499,13 @@ mod tests {
             Some("LEARNBUSINESS_API_KEY")
         );
 
-        let local_http = AiConfig {
-            provider: "local-http".to_string(),
-            base_url: "http://localhost:8080".to_string(),
-            chat_model: "local-chat".to_string(),
-            vision_model: "local-vision".to_string(),
-            embedding_model: "local-embedding".to_string(),
+        let legacy_alias = AiConfig {
+            provider: "openai-compatible".to_string(),
             api_key_env: String::new(),
+            ..http
         };
-        let descriptor = AiProviderDescriptor::from_config(&local_http).unwrap();
-        assert_eq!(descriptor.kind, AiProviderKind::LocalHttp);
-        assert!(descriptor.local_only);
-        assert!(!descriptor.requires_api_key);
-        assert!(descriptor.supports_vision);
-        assert!(descriptor.supports_embeddings);
+        let descriptor = AiProviderDescriptor::from_config(&legacy_alias).unwrap();
+        assert_eq!(descriptor.kind, AiProviderKind::Http);
     }
 
     #[test]
@@ -390,6 +517,7 @@ mod tests {
             vision_model: "vision".to_string(),
             embedding_model: "embedding".to_string(),
             api_key_env: String::new(),
+            headers: Default::default(),
         };
 
         let error = AiProviderDescriptor::from_config(&config)
@@ -397,43 +525,25 @@ mod tests {
             .to_string();
         assert!(error.contains("unsupported AI provider"));
         assert!(error.contains("mock"));
-        assert!(error.contains("openai-compatible"));
-        assert!(error.contains("ollama"));
-        assert!(error.contains("local-http"));
+        assert!(error.contains("http"));
     }
 
     #[test]
-    fn local_http_descriptor_rejects_non_local_base_url() {
+    fn http_descriptor_rejects_invalid_base_url_scheme() {
         let config = AiConfig {
-            provider: "local-http".to_string(),
-            base_url: "https://model.example.com/v1".to_string(),
+            provider: "http".to_string(),
+            base_url: "file:///tmp/model".to_string(),
             chat_model: "chat".to_string(),
             vision_model: "vision".to_string(),
             embedding_model: "embedding".to_string(),
             api_key_env: String::new(),
+            headers: Default::default(),
         };
 
         let error = AiProviderDescriptor::from_config(&config)
             .unwrap_err()
             .to_string();
-        assert!(error.contains("localhost"));
-    }
-
-    #[test]
-    fn ollama_descriptor_rejects_non_local_base_url() {
-        let config = AiConfig {
-            provider: "ollama".to_string(),
-            base_url: "https://model.example.com/v1".to_string(),
-            chat_model: "chat".to_string(),
-            vision_model: "vision".to_string(),
-            embedding_model: "embedding".to_string(),
-            api_key_env: String::new(),
-        };
-
-        let error = AiProviderDescriptor::from_config(&config)
-            .unwrap_err()
-            .to_string();
-        assert!(error.contains("localhost"));
+        assert!(error.contains("http or https"));
     }
 
     #[test]
@@ -443,12 +553,13 @@ mod tests {
             env::set_var(env_name, "secret-from-env");
         }
         let config = AiConfig {
-            provider: "openai-compatible".to_string(),
+            provider: "http".to_string(),
             base_url: "https://gateway.example.com/v1".to_string(),
             chat_model: "chat".to_string(),
             vision_model: "vision".to_string(),
             embedding_model: "embedding".to_string(),
             api_key_env: env_name.to_string(),
+            headers: Default::default(),
         };
 
         assert_eq!(

@@ -1,20 +1,51 @@
 use anyhow::{Context, Result};
+use reqwest::header::{HeaderName, HeaderValue};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HttpRequestHeader {
+    name: HeaderName,
+    value: HeaderValue,
+    display_value: String,
+}
+
+impl HttpRequestHeader {
+    pub fn new(name: impl AsRef<str>, value: impl Into<String>) -> Result<Self> {
+        let name = HeaderName::from_bytes(name.as_ref().trim().as_bytes())
+            .context("AI HTTP header name is invalid")?;
+        let display_value = value.into();
+        let value =
+            HeaderValue::from_str(&display_value).context("AI HTTP header value is invalid")?;
+        Ok(Self {
+            name,
+            value,
+            display_value,
+        })
+    }
+
+    pub fn name(&self) -> &str {
+        self.name.as_str()
+    }
+
+    pub fn value(&self) -> &str {
+        &self.display_value
+    }
+}
 
 pub fn post_json<T, R>(
     client: &reqwest::blocking::Client,
     url: &str,
     body: &T,
-    bearer_token: Option<&str>,
+    headers: &[HttpRequestHeader],
 ) -> Result<R>
 where
     T: Serialize + ?Sized,
     R: DeserializeOwned,
 {
     let mut request = client.post(url).json(body);
-    if let Some(token) = bearer_token {
-        request = request.bearer_auth(token);
+    for header in headers {
+        request = request.header(header.name.clone(), header.value.clone());
     }
 
     let response = request.send().context("AI HTTP request failed")?;
