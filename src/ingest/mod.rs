@@ -5,6 +5,7 @@ use std::path::Path;
 use anyhow::Result;
 use sha2::{Digest, Sha256};
 
+use crate::ai::AiRuntime;
 use crate::config::DEFAULT_CHUNK_CHAR_LIMIT;
 use crate::discover::{DiscoveredDocument, discover_documents};
 use crate::ingest::extract::{ExtractedChunk, extract_document_text};
@@ -20,12 +21,31 @@ pub struct IngestSummary {
     pub warnings: usize,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct IngestOptions {
+    pub describe_images: bool,
+    pub dry_run_ai: bool,
+}
+
 pub fn run_ingest(
     workspace_root: impl AsRef<Path>,
     docs_dir: impl AsRef<Path>,
 ) -> Result<IngestSummary> {
+    run_ingest_with_options(workspace_root, docs_dir, IngestOptions::default())
+}
+
+pub fn run_ingest_with_options(
+    workspace_root: impl AsRef<Path>,
+    docs_dir: impl AsRef<Path>,
+    options: IngestOptions,
+) -> Result<IngestSummary> {
     let workspace = Workspace::open(workspace_root);
     let store = MetadataStore::open(workspace.metadata_db_path())?;
+    let runtime = if options.describe_images {
+        Some(AiRuntime::open(workspace.root())?)
+    } else {
+        None
+    };
     let documents = discover_documents(docs_dir)?;
     let mut summary = IngestSummary {
         scanned: documents.len(),
@@ -33,7 +53,7 @@ pub fn run_ingest(
     };
 
     for document in documents {
-        match ingest_one(&store, &document) {
+        match ingest_one(&store, &document, runtime.as_ref(), options) {
             Ok(indexed) => {
                 if indexed {
                     summary.indexed += 1;
@@ -50,7 +70,12 @@ pub fn run_ingest(
     Ok(summary)
 }
 
-fn ingest_one(store: &MetadataStore, document: &DiscoveredDocument) -> Result<bool> {
+fn ingest_one(
+    store: &MetadataStore,
+    document: &DiscoveredDocument,
+    runtime: Option<&AiRuntime>,
+    options: IngestOptions,
+) -> Result<bool> {
     let document_id = stable_document_id(&document.path.to_string_lossy());
     if store
         .document_content_hash(&document_id)?
@@ -72,7 +97,7 @@ fn ingest_one(store: &MetadataStore, document: &DiscoveredDocument) -> Result<bo
     } else {
         "empty"
     };
-    let record = DocumentRecord::new(
+    let mut record = DocumentRecord::new(
         &document_id,
         document.path.to_string_lossy(),
         &document.file_type,
@@ -82,6 +107,34 @@ fn ingest_one(store: &MetadataStore, document: &DiscoveredDocument) -> Result<bo
     );
     store.upsert_document(&record)?;
     store.delete_chunks_for_document(&document_id)?;
+
+    if extracted.needs_ai
+        && options.describe_images
+        && let Some(runtime) = runtime
+    {
+        let result = runtime.describe_image(&document.path, options.dry_run_ai)?;
+        if let Some(description) = result.description {
+            let chunk_hash = sha256_text(&description);
+            let chunk_id =
+                Chunk::stable_id(&document_id, ChunkKind::Image, None, None, &chunk_hash);
+            let artifact_path = document.path.to_string_lossy().to_string();
+            store.insert_chunk_with_metadata(ChunkInsert {
+                id: &chunk_id,
+                document_id: &document_id,
+                kind: ChunkKind::Image.as_str(),
+                text: &description,
+                page: None,
+                slide: None,
+                source_range: None,
+                artifact_path: Some(&artifact_path),
+                confidence: Some(80),
+                ai_generated: true,
+            })?;
+            record.ingest_status = "indexed".to_string();
+            store.upsert_document(&record)?;
+            return Ok(true);
+        }
+    }
 
     if !has_text {
         return Ok(false);
@@ -239,6 +292,65 @@ mod tests {
         assert_eq!(documents.len(), 1);
         assert_eq!(documents[0].ingest_status, "needs_ai");
         assert!(store.list_chunks(10).unwrap().is_empty());
+    }
+
+    #[test]
+    fn image_descriptions_can_be_indexed_when_explicitly_enabled() {
+        let workspace = tempfile::tempdir().unwrap();
+        let docs = tempfile::tempdir().unwrap();
+        let file = docs.path().join("flow.png");
+        std::fs::write(&file, b"not a real image but enough for hashing").unwrap();
+
+        let summary = run_ingest_with_options(
+            workspace.path(),
+            docs.path(),
+            IngestOptions {
+                describe_images: true,
+                dry_run_ai: false,
+            },
+        )
+        .unwrap();
+        assert_eq!(summary.indexed, 1);
+
+        let store =
+            MetadataStore::open(Workspace::open(workspace.path()).metadata_db_path()).unwrap();
+        let chunks = store.list_chunks(10).unwrap();
+        assert_eq!(chunks.len(), 1);
+        assert!(chunks[0].snippet.contains("mock description"));
+        assert!(
+            chunks[0]
+                .artifact_path
+                .as_deref()
+                .is_some_and(|path| path.ends_with("flow.png"))
+        );
+        assert!(chunks[0].ai_generated);
+    }
+
+    #[test]
+    fn image_description_dry_run_records_audit_without_indexing_chunk() {
+        let workspace = tempfile::tempdir().unwrap();
+        let docs = tempfile::tempdir().unwrap();
+        let file = docs.path().join("flow.png");
+        std::fs::write(&file, b"not a real image but enough for hashing").unwrap();
+
+        let summary = run_ingest_with_options(
+            workspace.path(),
+            docs.path(),
+            IngestOptions {
+                describe_images: true,
+                dry_run_ai: true,
+            },
+        )
+        .unwrap();
+        assert_eq!(summary.indexed, 0);
+
+        let workspace_ref = Workspace::open(workspace.path());
+        let store = MetadataStore::open(workspace_ref.metadata_db_path()).unwrap();
+        assert!(store.list_chunks(10).unwrap().is_empty());
+        let calls = store.list_ai_calls().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].status, "dry_run");
+        assert_eq!(calls[0].purpose, "describe_image");
     }
 
     #[test]

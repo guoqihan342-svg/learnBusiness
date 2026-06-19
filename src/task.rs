@@ -130,6 +130,29 @@ mod tests {
         assert!(result.is_err());
         assert!(!executed);
     }
+
+    #[test]
+    fn search_requires_only_read_permission() {
+        let policy = CommandPermissionPolicy::search();
+        assert!(policy.requires(Permission::ReadLocal));
+        assert!(!policy.requires(Permission::AiExternal));
+        assert!(!policy.requires(Permission::ExternalNetwork));
+    }
+
+    #[test]
+    fn ingest_image_dry_run_does_not_require_external_network() {
+        let policy = CommandPermissionPolicy::ingest_with_options(true, true);
+        assert!(policy.requires(Permission::ReadLocal));
+        assert!(policy.requires(Permission::WriteWorkspace));
+        assert!(!policy.requires(Permission::ExternalNetwork));
+    }
+
+    #[test]
+    fn ingest_image_description_requires_external_permissions() {
+        let policy = CommandPermissionPolicy::ingest_with_options(true, false);
+        assert!(policy.requires(Permission::AiExternal));
+        assert!(policy.requires(Permission::ExternalNetwork));
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -151,10 +174,16 @@ impl CommandPermissionPolicy {
     }
 
     pub fn ingest() -> Self {
-        Self::new(
-            "ingest",
-            vec![Permission::ReadLocal, Permission::WriteWorkspace],
-        )
+        Self::ingest_with_options(false, false)
+    }
+
+    pub fn ingest_with_options(describe_images: bool, dry_run_ai: bool) -> Self {
+        let mut required = vec![Permission::ReadLocal, Permission::WriteWorkspace];
+        if describe_images && !dry_run_ai {
+            required.push(Permission::AiExternal);
+            required.push(Permission::ExternalNetwork);
+        }
+        Self::new("ingest", required)
     }
 
     pub fn status() -> Self {
@@ -163,6 +192,10 @@ impl CommandPermissionPolicy {
 
     pub fn inspect_ai() -> Self {
         Self::new("inspect-ai", vec![Permission::ReadLocal])
+    }
+
+    pub fn search() -> Self {
+        Self::new("search", vec![Permission::ReadLocal])
     }
 
     pub fn report() -> Self {

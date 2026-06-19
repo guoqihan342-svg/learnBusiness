@@ -69,7 +69,7 @@ X-App = "learnBusiness"
 | `content_hash` | chunk 文本 hash | `text` hash | 不含原文 |
 | `created_at` | 创建时间 | SQLite 默认时间 | 风险较低 |
 
-长文本按 `chunk_char_limit` 切分，默认 1600 字符。文档内容变化时，旧 chunk 和旧 FTS 记录会先删除，再写入新 chunk。`.docx` 正文会以文本 chunk 入库；`.pptx` 幻灯片文本会写入文本 chunk，并记录 `slide` 编号。
+长文本按 `chunk_char_limit` 切分，默认 1600 字符。文档内容变化时，旧 chunk 和旧 FTS 记录会先删除，再写入新 chunk。`.docx` 正文会以文本 chunk 入库；`.pptx` 幻灯片文本会写入文本 chunk，并记录 `slide` 编号。显式执行 `ingest --describe-images` 时，图片描述会以 `kind = image`、`ai_generated = true` 的 chunk 写入，并通过 `artifact_path` 指回原图片。
 
 ### chunks_fts
 
@@ -140,6 +140,8 @@ AI cache 位于 `.learnBusiness/cache/ai/`。缓存文件名由 `AiCacheKey` 生
 cache key 不包含 prompt、上下文正文、图片 base64、请求头值、模型回复正文或 API key。
 
 当前非 dry-run 的图片理解流程会把模型返回的描述写入 AI cache。缓存内容可能包含对业务图片、流程图、截图或文档页面的文字描述，应按敏感运行时数据处理。
+
+图片描述入库会同时写入 `chunks.text` 和 AI cache。`--dry-run-ai` 只写 AI 调用审计和 trace，不写图片描述 chunk。
 
 ## 配置数据
 

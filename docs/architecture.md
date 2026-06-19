@@ -66,7 +66,7 @@ CLI 编排层，解析 `init`、`ingest`、`status`、`inspect-ai`、`report`、
 
 ### ingest / extract
 
-`ingest` 串联发现、抽取、增量判断、切块和入库。`extract` 将文本、Markdown、基础 PDF、`.docx` 段落文本和 `.pptx` 幻灯片文本转成可索引文本；图片和无法直接抽取正文的资产登记为需要后续 AI/OCR 或多模态补全。
+`ingest` 串联发现、抽取、增量判断、切块和入库。`extract` 将文本、Markdown、基础 PDF、`.docx` 段落文本和 `.pptx` 幻灯片文本转成可索引文本；图片和无法直接抽取正文的资产默认登记为需要后续 AI/OCR 或多模态补全。用户显式传入 `--describe-images` 时，ingest 通过 `AiRuntime` 生成图片描述并写入 AI 生成 chunk。
 
 ### store
 
@@ -143,6 +143,10 @@ flowchart TD
 
 `main` -> `qa` -> `AiRuntime::answer` -> `store.search_text` -> top-k/截断/脱敏 -> `AiProvider.answer` -> `store.ai_calls` -> answer + structured citations。
 
+### search
+
+`main` -> `store.search_text` -> 输出 chunk、kind、score、页码/幻灯片、artifact 和 snippet。该路径不构造 `AiRuntime`，不调用 AI provider。
+
 ### describe-image
 
 `main` -> `AiRuntime::describe_image` -> 图片 hash/MIME -> dry-run 审计或 `AiProvider.describe_image` -> `store.ai_calls` -> `cache/ai`。
@@ -157,7 +161,10 @@ flowchart TD
 
 - `init`：需要 `WriteWorkspace`。
 - `ingest`：需要 `ReadLocal` 和 `WriteWorkspace`。
+- `ingest --describe-images --dry-run-ai`：需要 `ReadLocal` 和 `WriteWorkspace`。
+- 非 dry-run `ingest --describe-images`：额外需要 `AiExternal` 和 `ExternalNetwork`。
 - `status`、`inspect-ai`：需要 `ReadLocal`。
+- `search`：需要 `ReadLocal`。
 - `report`：需要 `ReadLocal` 和 `WriteWorkspace`。
 - `ask`：需要 `ReadLocal`、`WriteWorkspace` 和 `AiExternal`。
 - `describe-image --dry-run-ai`：需要 `ReadLocal` 和 `WriteWorkspace`。
@@ -181,6 +188,7 @@ flowchart TD
 - 有界切块：默认 `chunk_char_limit = 1600`。
 - 有界上下文：默认 `context_chunks = 5`，运行时限制在 1 到 20。
 - 空命中短路：没有检索来源时不调用 AI。
+- 检索调试：`search` 命令只访问本地 FTS，适合在调用 AI 前确认命中质量。
 - AI 缓存：按 provider、model、purpose、prompt version、content hash 和脱敏状态隔离。
 
 ## 扩展点

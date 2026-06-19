@@ -4,7 +4,7 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 use learn_business::ai::AiRuntime;
 use learn_business::config::APP_NAME;
-use learn_business::ingest::run_ingest;
+use learn_business::ingest::{IngestOptions, run_ingest_with_options};
 use learn_business::qa::answer_workspace;
 use learn_business::report::report_workspace;
 use learn_business::store::MetadataStore;
@@ -28,6 +28,10 @@ enum Commands {
         docs_dir: PathBuf,
         #[arg(long)]
         workspace: PathBuf,
+        #[arg(long)]
+        describe_images: bool,
+        #[arg(long)]
+        dry_run_ai: bool,
     },
     Status {
         #[arg(long)]
@@ -49,6 +53,13 @@ enum Commands {
         #[arg(long)]
         workspace: PathBuf,
         question: String,
+    },
+    Search {
+        #[arg(long)]
+        workspace: PathBuf,
+        #[arg(long, default_value_t = 5)]
+        limit: usize,
+        query: String,
     },
     DescribeImage {
         image_path: PathBuf,
@@ -73,15 +84,28 @@ fn main() -> Result<()> {
         Commands::Ingest {
             docs_dir,
             workspace,
+            describe_images,
+            dry_run_ai,
         } => {
-            run_with_permissions(&CommandPermissionPolicy::ingest(), &grants, || {
-                let summary = run_ingest(&workspace, &docs_dir)?;
-                println!(
-                    "ingest 完成: scanned={} indexed={} skipped={} warnings={}",
-                    summary.scanned, summary.indexed, summary.skipped, summary.warnings
-                );
-                Ok(())
-            })?;
+            run_with_permissions(
+                &CommandPermissionPolicy::ingest_with_options(describe_images, dry_run_ai),
+                &grants,
+                || {
+                    let summary = run_ingest_with_options(
+                        &workspace,
+                        &docs_dir,
+                        IngestOptions {
+                            describe_images,
+                            dry_run_ai,
+                        },
+                    )?;
+                    println!(
+                        "ingest 完成: scanned={} indexed={} skipped={} warnings={}",
+                        summary.scanned, summary.indexed, summary.skipped, summary.warnings
+                    );
+                    Ok(())
+                },
+            )?;
         }
         Commands::Status { workspace } => {
             run_with_permissions(&CommandPermissionPolicy::status(), &grants, || {
@@ -131,6 +155,15 @@ fn main() -> Result<()> {
                 Ok(())
             })?;
         }
+        Commands::Search {
+            workspace,
+            limit,
+            query,
+        } => {
+            run_with_permissions(&CommandPermissionPolicy::search(), &grants, || {
+                search_command(workspace, &query, limit)
+            })?;
+        }
         Commands::DescribeImage {
             image_path,
             workspace,
@@ -144,6 +177,45 @@ fn main() -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn search_command(workspace_root: PathBuf, query: &str, limit: usize) -> Result<()> {
+    let workspace = Workspace::open(workspace_root);
+    let store = MetadataStore::open(workspace.metadata_db_path())?;
+    let results = store.search_text(query, limit)?;
+    if results.is_empty() {
+        println!("没有检索命中。");
+        return Ok(());
+    }
+
+    for result in results {
+        let mut parts = vec![
+            result.document_path,
+            format!("chunk={}", result.chunk_id),
+            format!("kind={}", result.kind),
+            format!("score={:.4}", result.score),
+            format!("ai_generated={}", result.ai_generated),
+        ];
+        if let Some(page) = result.page {
+            parts.push(format!("page={page}"));
+        }
+        if let Some(slide) = result.slide {
+            parts.push(format!("slide={slide}"));
+        }
+        if let Some(source_range) = result.source_range {
+            parts.push(format!("range={source_range}"));
+        }
+        if let Some(artifact_path) = result.artifact_path {
+            parts.push(format!("artifact={artifact_path}"));
+        }
+        parts.push(format!("snippet={}", one_line(&result.snippet)));
+        println!("- {}", parts.join(" "));
+    }
+    Ok(())
+}
+
+fn one_line(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 fn describe_image_command(

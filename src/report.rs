@@ -16,12 +16,24 @@ impl ReportGenerator {
             .iter()
             .map(|chunk| {
                 format!(
-                    "- `{}`: {}",
+                    "- `{}` chunk={}: {}",
                     chunk.document_path,
+                    chunk.chunk_id,
                     first_line(&chunk.snippet)
                 )
             })
             .collect::<Vec<_>>();
+        let business_objects = extract_business_objects(&chunks);
+        let flow_candidates = collect_sentences(
+            &chunks,
+            &["流程", "步骤", "提交", "审核", "审批", "归档", "处理"],
+        );
+        let rule_candidates = collect_sentences(
+            &chunks,
+            &["规则", "必须", "不得", "需要", "应当", "条件", "限制"],
+        );
+        let risk_candidates =
+            collect_sentences(&chunks, &["风险", "异常", "失败", "缺失", "待确认", "问题"]);
 
         Ok(format!(
             "\
@@ -37,9 +49,21 @@ impl ReportGenerator {
 
 ## 核心业务对象
 
-- 待从更多文档和领域 skill 中提炼。
+以下为本地规则提取的候选对象，需要业务负责人复核：
+
+{}
 
 ## 主要业务流程
+
+以下为本地索引中的流程候选线索：
+
+{}
+
+## 规则与约束
+
+{}
+
+## 风险与待确认
 
 {}
 
@@ -53,7 +77,10 @@ impl ReportGenerator {
 {}
 ",
             chunks.len(),
-            summarize_flow_candidates(&chunks),
+            format_lines_or_empty(&business_objects, "- 暂无候选对象。"),
+            format_lines_or_empty(&flow_candidates, "- 当前索引中还没有足够信息生成流程摘要。"),
+            format_lines_or_empty(&rule_candidates, "- 暂无规则或约束候选。"),
+            format_lines_or_empty(&risk_candidates, "- 暂无风险或待确认候选。"),
             if source_lines.is_empty() {
                 "- 暂无来源。".to_string()
             } else {
@@ -71,14 +98,65 @@ pub fn report_workspace(workspace_root: impl AsRef<Path>, out: impl AsRef<Path>)
     Ok(())
 }
 
-fn summarize_flow_candidates(chunks: &[crate::store::SearchResult]) -> String {
-    let lines = chunks
-        .iter()
-        .filter(|chunk| chunk.snippet.contains("流程") || chunk.snippet.contains("规则"))
-        .map(|chunk| format!("- {}", first_line(&chunk.snippet)))
-        .collect::<Vec<_>>();
+fn extract_business_objects(chunks: &[crate::store::SearchResult]) -> Vec<String> {
+    let keywords = [
+        "客户", "订单", "合同", "申请", "用户", "系统", "角色", "部门", "运营", "审批",
+    ];
+    let mut lines = Vec::new();
+    for chunk in chunks {
+        for keyword in keywords {
+            if chunk.snippet.contains(keyword) {
+                lines.push(format!("- {keyword} ({})", source_label(chunk)));
+            }
+        }
+    }
+    lines.sort();
+    lines.dedup();
+    lines
+}
+
+fn collect_sentences(chunks: &[crate::store::SearchResult], keywords: &[&str]) -> Vec<String> {
+    let mut lines = Vec::new();
+    for chunk in chunks {
+        for sentence in split_sentences(&chunk.snippet) {
+            if keywords.iter().any(|keyword| sentence.contains(keyword)) {
+                lines.push(format!(
+                    "- {} ({})",
+                    first_line(sentence),
+                    source_label(chunk)
+                ));
+            }
+        }
+    }
+    lines.sort();
+    lines.dedup();
+    lines
+}
+
+fn split_sentences(text: &str) -> Vec<&str> {
+    text.split(['。', '！', '？', '\n'])
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect()
+}
+
+fn source_label(chunk: &crate::store::SearchResult) -> String {
+    let mut parts = vec![
+        format!("`{}`", chunk.document_path),
+        format!("chunk={}", chunk.chunk_id),
+    ];
+    if let Some(page) = chunk.page {
+        parts.push(format!("page={page}"));
+    }
+    if let Some(slide) = chunk.slide {
+        parts.push(format!("slide={slide}"));
+    }
+    parts.join(" ")
+}
+
+fn format_lines_or_empty(lines: &[String], empty: &str) -> String {
     if lines.is_empty() {
-        "- 当前索引中还没有足够信息生成流程摘要。".to_string()
+        empty.to_string()
     } else {
         lines.join("\n")
     }
@@ -119,5 +197,33 @@ mod tests {
         assert!(report.contains("## 执行摘要"));
         assert!(report.contains("## 来源引用"));
         assert!(report.contains("process.txt"));
+    }
+
+    #[test]
+    fn report_extracts_business_candidates_with_sources() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = MetadataStore::open(dir.path().join("metadata.sqlite")).unwrap();
+        let doc = DocumentRecord::new_for_test("doc-1", "policy.txt", "text/plain");
+        store.upsert_document(&doc).unwrap();
+        store
+            .insert_chunk(
+                "chunk-1",
+                "doc-1",
+                "text",
+                "客户提交合同申请，运营部门必须审核。异常风险需要待确认。核心流程是提交、审核、归档。",
+                None,
+                None,
+            )
+            .unwrap();
+
+        let report = ReportGenerator::generate(&store).unwrap();
+        assert!(report.contains("## 核心业务对象"));
+        assert!(report.contains("客户"));
+        assert!(report.contains("合同"));
+        assert!(report.contains("## 规则与约束"));
+        assert!(report.contains("必须审核"));
+        assert!(report.contains("## 风险与待确认"));
+        assert!(report.contains("异常风险"));
+        assert!(report.contains("chunk-1"));
     }
 }

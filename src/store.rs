@@ -234,12 +234,15 @@ impl MetadataStore {
             SELECT
                 c.id,
                 d.path,
+                c.kind,
                 c.text,
                 bm25(chunks_fts) AS score,
                 c.page,
                 c.slide,
                 c.source_range,
-                c.artifact_path
+                c.artifact_path,
+                c.confidence,
+                c.ai_generated
             FROM chunks_fts
             JOIN chunks c ON c.id = chunks_fts.chunk_id
             JOIN documents d ON d.id = c.document_id
@@ -252,12 +255,15 @@ impl MetadataStore {
             Ok(SearchResult {
                 chunk_id: row.get(0)?,
                 document_path: row.get(1)?,
-                snippet: row.get(2)?,
-                score: row.get(3)?,
-                page: row.get::<_, Option<i64>>(4)?.map(|value| value as u32),
-                slide: row.get::<_, Option<i64>>(5)?.map(|value| value as u32),
-                source_range: row.get(6)?,
-                artifact_path: row.get(7)?,
+                kind: row.get(2)?,
+                snippet: row.get(3)?,
+                score: row.get(4)?,
+                page: row.get::<_, Option<i64>>(5)?.map(|value| value as u32),
+                slide: row.get::<_, Option<i64>>(6)?.map(|value| value as u32),
+                source_range: row.get(7)?,
+                artifact_path: row.get(8)?,
+                confidence: row.get::<_, Option<i64>>(9)?.map(|value| value as u8),
+                ai_generated: row.get::<_, i64>(10)? != 0,
             })
         })?;
 
@@ -275,12 +281,15 @@ impl MetadataStore {
             SELECT
                 c.id,
                 d.path,
+                c.kind,
                 c.text,
                 0.0 AS score,
                 c.page,
                 c.slide,
                 c.source_range,
-                c.artifact_path
+                c.artifact_path,
+                c.confidence,
+                c.ai_generated
             FROM chunks c
             JOIN documents d ON d.id = c.document_id
             ORDER BY d.path, c.id
@@ -291,12 +300,15 @@ impl MetadataStore {
             Ok(SearchResult {
                 chunk_id: row.get(0)?,
                 document_path: row.get(1)?,
-                snippet: row.get(2)?,
-                score: row.get(3)?,
-                page: row.get::<_, Option<i64>>(4)?.map(|value| value as u32),
-                slide: row.get::<_, Option<i64>>(5)?.map(|value| value as u32),
-                source_range: row.get(6)?,
-                artifact_path: row.get(7)?,
+                kind: row.get(2)?,
+                snippet: row.get(3)?,
+                score: row.get(4)?,
+                page: row.get::<_, Option<i64>>(5)?.map(|value| value as u32),
+                slide: row.get::<_, Option<i64>>(6)?.map(|value| value as u32),
+                source_range: row.get(7)?,
+                artifact_path: row.get(8)?,
+                confidence: row.get::<_, Option<i64>>(9)?.map(|value| value as u8),
+                ai_generated: row.get::<_, i64>(10)? != 0,
             })
         })?;
 
@@ -486,12 +498,15 @@ impl DocumentRecord {
 pub struct SearchResult {
     pub chunk_id: String,
     pub document_path: String,
+    pub kind: String,
     pub snippet: String,
     pub score: f64,
     pub page: Option<u32>,
     pub slide: Option<u32>,
     pub source_range: Option<String>,
     pub artifact_path: Option<String>,
+    pub confidence: Option<u8>,
+    pub ai_generated: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

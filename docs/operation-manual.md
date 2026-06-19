@@ -81,13 +81,25 @@ Get-Content -LiteralPath .\workspace\.learnBusiness\config\app.toml
 cargo run --bin learnBusiness -- ingest .\samples\docs --workspace .\workspace
 ```
 
+显式处理图片描述并写入索引：
+
+```powershell
+cargo run --bin learnBusiness -- ingest .\samples\docs --workspace .\workspace --describe-images
+```
+
+只预览图片 AI 调用计划，不写图片描述 chunk：
+
+```powershell
+cargo run --bin learnBusiness -- ingest .\samples\docs --workspace .\workspace --describe-images --dry-run-ai
+```
+
 当前行为：
 
 - `.txt` 和 `.md` 按文本读取。
 - `.pdf` 尝试抽取基础文本。
 - `.docx` 会从 Office Open XML 的 `word/document.xml` 抽取正文段落。
 - `.pptx` 会从 `ppt/slides/slide*.xml` 抽取幻灯片文本，并保留 slide 编号。
-- 图片会被发现并登记为需要 AI/OCR 后续处理的资料，默认导入不会自动发送给 AI。
+- 图片会被发现并登记为需要 AI/OCR 后续处理的资料；只有显式传入 `--describe-images` 才会调用多模态 AI 并把描述写入索引。
 - 不支持的扩展名会忽略。
 - 未变化文件按内容 hash 跳过。
 
@@ -102,6 +114,25 @@ cargo run --bin learnBusiness -- ingest .\samples\docs --workspace .\workspace
 ```powershell
 cargo run --bin learnBusiness -- status --workspace .\workspace
 ```
+
+## 本地检索
+
+```powershell
+cargo run --bin learnBusiness -- search --workspace .\workspace --limit 5 "运营审核"
+```
+
+`search` 只查询本地 FTS 索引，不调用 AI provider，不写 AI 审计。输出包括：
+
+- 文件路径
+- `chunk`
+- `kind`
+- `score`
+- `ai_generated`
+- `page` 或 `slide`
+- `artifact`
+- `snippet`
+
+建议先用 `search` 检查资料是否命中，再执行 `ask`。
 
 ## 问答
 
@@ -138,7 +169,7 @@ cargo run --bin learnBusiness -- report --workspace .\workspace --out .\workspac
 Get-Content -LiteralPath .\workspace\report.md
 ```
 
-当前报告是轻量草稿，适合快速审阅资料覆盖和业务线索，不替代业务负责人复核。
+当前报告是本地规则提取的候选线索，包含业务对象、流程候选、规则/约束、风险/待确认和来源引用，不替代业务负责人复核。
 
 ## 图片 Dry-run
 
@@ -356,3 +387,7 @@ chunk_char_limit = 1600
 ```
 
 需要更多上下文时可以调高 `context_chunks`，但不要为了“答案更全”盲目增加。更有效的做法通常是改进资料结构和提问关键词。
+
+### search 和 ask 怎么配合？
+
+先用 `search` 看本地索引是否命中关键资料；确认命中后再用 `ask`。这样可以避免没有来源时无效调用 AI，也更容易定位资料缺口。

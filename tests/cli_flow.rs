@@ -59,6 +59,143 @@ fn ingest_indexes_text_document() {
 }
 
 #[test]
+fn ingest_describe_images_indexes_mock_description_for_search() {
+    let workspace = tempfile::tempdir().unwrap();
+    let docs = tempfile::tempdir().unwrap();
+    std::fs::write(docs.path().join("flow.png"), b"image bytes").unwrap();
+
+    Command::cargo_bin("learnBusiness")
+        .unwrap()
+        .args(["init", workspace.path().to_str().unwrap()])
+        .assert()
+        .success();
+    Command::cargo_bin("learnBusiness")
+        .unwrap()
+        .args([
+            "ingest",
+            docs.path().to_str().unwrap(),
+            "--workspace",
+            workspace.path().to_str().unwrap(),
+            "--describe-images",
+        ])
+        .assert()
+        .success();
+
+    Command::cargo_bin("learnBusiness")
+        .unwrap()
+        .args([
+            "search",
+            "--workspace",
+            workspace.path().to_str().unwrap(),
+            "mock description",
+        ])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("flow.png"))
+        .stdout(predicates::str::contains("kind=image"))
+        .stdout(predicates::str::contains("ai_generated=true"));
+}
+
+#[test]
+fn ingest_describe_images_dry_run_does_not_index_description() {
+    let workspace = tempfile::tempdir().unwrap();
+    let docs = tempfile::tempdir().unwrap();
+    std::fs::write(docs.path().join("flow.png"), b"image bytes").unwrap();
+
+    Command::cargo_bin("learnBusiness")
+        .unwrap()
+        .args(["init", workspace.path().to_str().unwrap()])
+        .assert()
+        .success();
+    Command::cargo_bin("learnBusiness")
+        .unwrap()
+        .args([
+            "ingest",
+            docs.path().to_str().unwrap(),
+            "--workspace",
+            workspace.path().to_str().unwrap(),
+            "--describe-images",
+            "--dry-run-ai",
+        ])
+        .assert()
+        .success();
+
+    Command::cargo_bin("learnBusiness")
+        .unwrap()
+        .args([
+            "search",
+            "--workspace",
+            workspace.path().to_str().unwrap(),
+            "mock description",
+        ])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("没有检索命中"));
+
+    Command::cargo_bin("learnBusiness")
+        .unwrap()
+        .args([
+            "inspect-ai",
+            "--workspace",
+            workspace.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("status=dry_run"));
+}
+
+#[test]
+fn search_returns_local_results_without_ai_call() {
+    let workspace = tempfile::tempdir().unwrap();
+    let docs = tempfile::tempdir().unwrap();
+    std::fs::write(docs.path().join("process.txt"), "客户申请后运营审核。").unwrap();
+
+    Command::cargo_bin("learnBusiness")
+        .unwrap()
+        .args(["init", workspace.path().to_str().unwrap()])
+        .assert()
+        .success();
+    Command::cargo_bin("learnBusiness")
+        .unwrap()
+        .args([
+            "ingest",
+            docs.path().to_str().unwrap(),
+            "--workspace",
+            workspace.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    Command::cargo_bin("learnBusiness")
+        .unwrap()
+        .args([
+            "search",
+            "--workspace",
+            workspace.path().to_str().unwrap(),
+            "--limit",
+            "1",
+            "运营审核",
+        ])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("process.txt"))
+        .stdout(predicates::str::contains("chunk="))
+        .stdout(predicates::str::contains("score="))
+        .stdout(predicates::str::contains("snippet="));
+
+    Command::cargo_bin("learnBusiness")
+        .unwrap()
+        .args([
+            "inspect-ai",
+            "--workspace",
+            workspace.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("没有 AI 调用记录"));
+}
+
+#[test]
 fn ask_returns_answer_with_source() {
     let workspace = tempfile::tempdir().unwrap();
     let docs = tempfile::tempdir().unwrap();

@@ -31,6 +31,7 @@ flowchart LR
 ```powershell
 cargo run --bin learnBusiness -- init .\workspace
 cargo run --bin learnBusiness -- ingest .\docs --workspace .\workspace
+cargo run --bin learnBusiness -- search --workspace .\workspace "核心流程"
 cargo run --bin learnBusiness -- ask --workspace .\workspace "这个业务的核心流程是什么？"
 cargo run --bin learnBusiness -- report --workspace .\workspace --out report.md
 ```
@@ -62,9 +63,10 @@ cargo run --bin learnBusiness -- report --workspace .\workspace --out report.md
 - 文本抽取：支持纯文本、Markdown、基础 PDF、`.docx` 段落文本和 `.pptx` 幻灯片文本抽取。
 - 轻量分片：长文本按 `performance.chunk_char_limit` 切块，默认 1600 字符。
 - 本地索引：使用 SQLite 保存文档、chunk 和 AI 调用审计，使用 FTS5 做全文检索。
+- 本地检索调试：`search` 命令直接查看 chunk、score、snippet、页码或幻灯片号，不调用 AI。
 - 省 token 问答：只把 `performance.context_chunks` 个相关 chunk 交给 AI，默认 5，最大 20，并在 CLI 输出 chunk、score、页码或幻灯片号。
-- 多模态预留：`describe-image` 通过 `AiRuntime` 调用多模态 HTTP 接口；`--dry-run-ai` 只记录计划和 trace id，不发送图片。
-- 报告输出：生成包含执行摘要、资料集概览、流程候选和来源引用的 Markdown 报告。
+- 多模态入库：`describe-image` 可单张描述图片；`ingest --describe-images` 可显式把图片描述写入索引，`--dry-run-ai` 只记录计划和 trace id。
+- 报告输出：生成包含执行摘要、资料集概览、业务对象、流程候选、规则/约束、风险/待确认和来源引用的 Markdown 报告。
 - 扩展点：保留 AI provider、skill、MCP、向量检索、OCR 和更强文档解析能力的接入位置。
 - 权限网关：CLI 命令在执行前声明并校验本地读、工作区写、外部 AI 和外部网络权限。
 
