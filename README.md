@@ -59,13 +59,14 @@ cargo run --bin learnBusiness -- report --workspace .\workspace --out report.md
 
 - 本地工作区：配置集中在 `.learnBusiness/config/app.toml`，数据、缓存和日志按用途隔离。
 - 文档发现：识别 `txt`、`md`、`pdf`、常见图片、`docx`、`pptx`，并记录 hash 与基础元数据。
-- 文本抽取：支持纯文本、Markdown 和基础 PDF 文本抽取。
+- 文本抽取：支持纯文本、Markdown、基础 PDF、`.docx` 段落文本和 `.pptx` 幻灯片文本抽取。
 - 轻量分片：长文本按 `performance.chunk_char_limit` 切块，默认 1600 字符。
 - 本地索引：使用 SQLite 保存文档、chunk 和 AI 调用审计，使用 FTS5 做全文检索。
-- 省 token 问答：只把 `performance.context_chunks` 个相关 chunk 交给 AI，默认 5，最大 20。
-- 多模态预留：`describe-image` 通过 `AiRuntime` 调用多模态 HTTP 接口；`--dry-run-ai` 只记录计划，不发送图片。
+- 省 token 问答：只把 `performance.context_chunks` 个相关 chunk 交给 AI，默认 5，最大 20，并在 CLI 输出 chunk、score、页码或幻灯片号。
+- 多模态预留：`describe-image` 通过 `AiRuntime` 调用多模态 HTTP 接口；`--dry-run-ai` 只记录计划和 trace id，不发送图片。
 - 报告输出：生成包含执行摘要、资料集概览、流程候选和来源引用的 Markdown 报告。
 - 扩展点：保留 AI provider、skill、MCP、向量检索、OCR 和更强文档解析能力的接入位置。
+- 权限网关：CLI 命令在执行前声明并校验本地读、工作区写、外部 AI 和外部网络权限。
 
 ## AI Provider
 
@@ -117,13 +118,13 @@ chunk_char_limit = 1600
 - 默认不出网：初始配置使用 `mock`。
 - 密钥不落盘：推荐用环境变量占位符配置请求头。
 - 少发上下文：问答只发送检索命中的 top-k chunk。
-- 不写原文日志：审计和 trace 只保存 provider、model、purpose、hash、状态、token 估算、失败类别和脱敏标记。
+- 不写原文日志：审计和 trace 只保存 provider、model、purpose、trace id、hash、状态、token 估算、失败类别和脱敏标记。
 - 本机端点可配：loopback `base_url` 会被识别为本机地址，但它只影响脱敏策略判断，不绑定任何特定模型产品。
 - HTTP client 默认关闭环境代理，降低 localhost 请求被系统代理劫持的风险。
 
 ## 当前边界
 
-- Word、PPT 和图片当前主要完成类型识别和资产登记，正文抽取、OCR 和版面理解是后续增强方向。
+- Word、PPT 已支持 Office Open XML 正文抽取；复杂版面、嵌入图片、扫描件 OCR 和图片内容入库仍是后续增强方向。
 - 向量目录已经预留，当前检索主路径仍是 SQLite FTS5。
 - report 是轻量业务报告草稿，不等同完整业务建模或流程挖掘系统。
 - redaction 当前是规则级脱敏，覆盖邮箱、手机号、长数字和常见 `sk-` 样式密钥。

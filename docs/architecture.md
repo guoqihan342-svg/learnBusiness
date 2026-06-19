@@ -66,7 +66,7 @@ CLI 编排层，解析 `init`、`ingest`、`status`、`inspect-ai`、`report`、
 
 ### ingest / extract
 
-`ingest` 串联发现、抽取、增量判断、切块和入库。`extract` 将文本、Markdown 和基础 PDF 转成可索引文本；图片、Word、PPT 当前登记为需要后续 AI/OCR 或多模态补全。
+`ingest` 串联发现、抽取、增量判断、切块和入库。`extract` 将文本、Markdown、基础 PDF、`.docx` 段落文本和 `.pptx` 幻灯片文本转成可索引文本；图片和无法直接抽取正文的资产登记为需要后续 AI/OCR 或多模态补全。
 
 ### store
 
@@ -141,7 +141,7 @@ flowchart TD
 
 ### ask
 
-`main` -> `qa` -> `AiRuntime::answer` -> `store.search_text` -> top-k/截断/脱敏 -> `AiProvider.answer` -> `store.ai_calls` -> answer + sources。
+`main` -> `qa` -> `AiRuntime::answer` -> `store.search_text` -> top-k/截断/脱敏 -> `AiProvider.answer` -> `store.ai_calls` -> answer + structured citations。
 
 ### describe-image
 
@@ -149,7 +149,21 @@ flowchart TD
 
 ### inspect-ai
 
-`main` -> `store.list_ai_calls` -> 输出 provider、model、purpose、status、hash、token、redaction、error_category。
+`main` -> `store.list_ai_calls` -> 可选按 `--trace <trace_id>` 过滤 -> 输出 provider、model、purpose、status、trace id、hash、token、redaction、error_category。
+
+## 权限网关
+
+`task` 模块定义命令级权限策略，CLI 命令在执行主体前统一校验：
+
+- `init`：需要 `WriteWorkspace`。
+- `ingest`：需要 `ReadLocal` 和 `WriteWorkspace`。
+- `status`、`inspect-ai`：需要 `ReadLocal`。
+- `report`：需要 `ReadLocal` 和 `WriteWorkspace`。
+- `ask`：需要 `ReadLocal`、`WriteWorkspace` 和 `AiExternal`。
+- `describe-image --dry-run-ai`：需要 `ReadLocal` 和 `WriteWorkspace`。
+- 非 dry-run `describe-image`：额外需要 `AiExternal` 和 `ExternalNetwork`。
+
+当前默认 CLI 授权集面向本机可信执行，包含本地读写和外部 AI/网络权限；`McpExternal` 已预留给后续 MCP 工具，避免外部工具绕过统一授权边界。
 
 ## 安全边界
 
@@ -178,8 +192,8 @@ flowchart TD
 
 ## 当前限制
 
-- Word、PPT 和图片内容当前只登记为需要 AI/OCR 补全，尚未自动抽取正文。
+- Word、PPT 已支持 Office Open XML 正文抽取；复杂版面、嵌入图片、备注、扫描件 OCR 和图片内容入库仍待后续增强。
 - 向量目录已预留，但当前检索主要依赖 SQLite FTS5。
 - report 是轻量报告草稿，不等同完整业务建模。
 - redaction 当前是正则级脱敏，只覆盖常见邮箱、手机号、长数字和 `sk-` 样式密钥。
-- 权限模型已定义，但尚未在每个 CLI 命令形成统一执行网关。
+- 权限模型已接入 CLI 命令入口；后续需要从配置或任务描述加载更细的授权策略。

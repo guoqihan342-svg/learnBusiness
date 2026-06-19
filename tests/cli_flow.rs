@@ -94,7 +94,9 @@ fn ask_returns_answer_with_source() {
         ])
         .assert()
         .success()
-        .stdout(predicates::str::contains("process.txt"));
+        .stdout(predicates::str::contains("process.txt"))
+        .stdout(predicates::str::contains("chunk="))
+        .stdout(predicates::str::contains("score="));
 }
 
 #[test]
@@ -167,8 +169,72 @@ fn inspect_ai_lists_dry_run_image_audit_record() {
         .success()
         .stdout(predicates::str::contains("describe_image"))
         .stdout(predicates::str::contains("dry_run"))
+        .stdout(predicates::str::contains("trace_id="))
         .stdout(predicates::str::contains("output_hash=-"))
         .stdout(predicates::str::contains("error_category=-"));
+}
+
+#[test]
+fn inspect_ai_filters_by_trace_id() {
+    let workspace = tempfile::tempdir().unwrap();
+    let image_dir = tempfile::tempdir().unwrap();
+    let first = image_dir.path().join("first.png");
+    let second = image_dir.path().join("second.png");
+    std::fs::write(&first, b"first").unwrap();
+    std::fs::write(&second, b"second").unwrap();
+
+    Command::cargo_bin("learnBusiness")
+        .unwrap()
+        .args(["init", workspace.path().to_str().unwrap()])
+        .assert()
+        .success();
+    for image in [&first, &second] {
+        Command::cargo_bin("learnBusiness")
+            .unwrap()
+            .args([
+                "describe-image",
+                image.to_str().unwrap(),
+                "--workspace",
+                workspace.path().to_str().unwrap(),
+                "--dry-run-ai",
+            ])
+            .assert()
+            .success();
+    }
+
+    let output = Command::cargo_bin("learnBusiness")
+        .unwrap()
+        .args([
+            "inspect-ai",
+            "--workspace",
+            workspace.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let trace_id = stdout
+        .lines()
+        .find_map(|line| {
+            line.split_whitespace()
+                .find_map(|part| part.strip_prefix("trace_id="))
+        })
+        .unwrap()
+        .to_string();
+
+    Command::cargo_bin("learnBusiness")
+        .unwrap()
+        .args([
+            "inspect-ai",
+            "--workspace",
+            workspace.path().to_str().unwrap(),
+            "--trace",
+            &trace_id,
+        ])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains(format!("trace_id={trace_id}")))
+        .stdout(predicates::str::contains("describe_image"));
 }
 
 #[test]

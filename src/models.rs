@@ -89,18 +89,22 @@ pub struct AiCall {
     pub purpose: String,
     pub input_hash: String,
     pub output_hash: Option<String>,
+    pub trace_id: Option<String>,
     pub token_estimate: Option<u32>,
     pub redaction_applied: bool,
     pub status: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Citation {
     pub chunk_id: String,
     pub document_path: String,
     pub page: Option<u32>,
     pub slide: Option<u32>,
     pub source_range: Option<String>,
+    pub artifact_path: Option<String>,
+    pub score: f64,
+    pub snippet: String,
 }
 
 #[cfg(test)]

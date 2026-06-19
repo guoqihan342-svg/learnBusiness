@@ -57,6 +57,7 @@ impl MetadataStore {
                 purpose TEXT NOT NULL,
                 input_hash TEXT NOT NULL,
                 output_hash TEXT,
+                trace_id TEXT,
                 token_estimate INTEGER,
                 redaction_applied INTEGER NOT NULL DEFAULT 0,
                 error_category TEXT,
@@ -72,6 +73,7 @@ impl MetadataStore {
             ",
         )?;
         ensure_ai_calls_error_category_column(&connection)?;
+        ensure_ai_calls_trace_id_column(&connection)?;
 
         Ok(Self { connection })
     }
@@ -142,7 +144,22 @@ impl MetadataStore {
         page: Option<u32>,
         slide: Option<u32>,
     ) -> Result<()> {
-        let content_hash = sha256_text(text);
+        self.insert_chunk_with_metadata(ChunkInsert {
+            id,
+            document_id,
+            kind,
+            text,
+            page,
+            slide,
+            source_range: None,
+            artifact_path: None,
+            confidence: None,
+            ai_generated: false,
+        })
+    }
+
+    pub fn insert_chunk_with_metadata(&self, chunk: ChunkInsert<'_>) -> Result<()> {
+        let content_hash = sha256_text(chunk.text);
         self.connection.execute(
             "
             INSERT INTO chunks (
@@ -152,36 +169,54 @@ impl MetadataStore {
                 text,
                 page,
                 slide,
+                source_range,
+                artifact_path,
+                confidence,
+                ai_generated,
                 content_hash
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
             ON CONFLICT(id) DO UPDATE SET
                 document_id = excluded.document_id,
                 kind = excluded.kind,
                 text = excluded.text,
                 page = excluded.page,
                 slide = excluded.slide,
+                source_range = excluded.source_range,
+                artifact_path = excluded.artifact_path,
+                confidence = excluded.confidence,
+                ai_generated = excluded.ai_generated,
                 content_hash = excluded.content_hash
             ",
             params![
-                id,
-                document_id,
-                kind,
-                text,
-                page.map(i64::from),
-                slide.map(i64::from),
+                chunk.id,
+                chunk.document_id,
+                chunk.kind,
+                chunk.text,
+                chunk.page.map(i64::from),
+                chunk.slide.map(i64::from),
+                chunk.source_range,
+                chunk.artifact_path,
+                chunk.confidence.map(i64::from),
+                i64::from(chunk.ai_generated),
                 content_hash,
             ],
         )?;
 
-        self.connection
-            .execute("DELETE FROM chunks_fts WHERE chunk_id = ?1", params![id])?;
+        self.connection.execute(
+            "DELETE FROM chunks_fts WHERE chunk_id = ?1",
+            params![chunk.id],
+        )?;
         self.connection.execute(
             "
             INSERT INTO chunks_fts (chunk_id, document_id, text)
             VALUES (?1, ?2, ?3)
             ",
-            params![id, document_id, full_text_index_body(text)],
+            params![
+                chunk.id,
+                chunk.document_id,
+                full_text_index_body(chunk.text)
+            ],
         )?;
 
         Ok(())
@@ -200,7 +235,11 @@ impl MetadataStore {
                 c.id,
                 d.path,
                 c.text,
-                bm25(chunks_fts) AS score
+                bm25(chunks_fts) AS score,
+                c.page,
+                c.slide,
+                c.source_range,
+                c.artifact_path
             FROM chunks_fts
             JOIN chunks c ON c.id = chunks_fts.chunk_id
             JOIN documents d ON d.id = c.document_id
@@ -215,6 +254,10 @@ impl MetadataStore {
                 document_path: row.get(1)?,
                 snippet: row.get(2)?,
                 score: row.get(3)?,
+                page: row.get::<_, Option<i64>>(4)?.map(|value| value as u32),
+                slide: row.get::<_, Option<i64>>(5)?.map(|value| value as u32),
+                source_range: row.get(6)?,
+                artifact_path: row.get(7)?,
             })
         })?;
 
@@ -233,7 +276,11 @@ impl MetadataStore {
                 c.id,
                 d.path,
                 c.text,
-                0.0 AS score
+                0.0 AS score,
+                c.page,
+                c.slide,
+                c.source_range,
+                c.artifact_path
             FROM chunks c
             JOIN documents d ON d.id = c.document_id
             ORDER BY d.path, c.id
@@ -246,6 +293,10 @@ impl MetadataStore {
                 document_path: row.get(1)?,
                 snippet: row.get(2)?,
                 score: row.get(3)?,
+                page: row.get::<_, Option<i64>>(4)?.map(|value| value as u32),
+                slide: row.get::<_, Option<i64>>(5)?.map(|value| value as u32),
+                source_range: row.get(6)?,
+                artifact_path: row.get(7)?,
             })
         })?;
 
@@ -262,6 +313,30 @@ impl MetadataStore {
         Ok(count as usize)
     }
 
+    pub fn list_documents(&self) -> Result<Vec<DocumentRecord>> {
+        let mut statement = self.connection.prepare(
+            "
+            SELECT id, path, file_type, content_hash, modified_at, size_bytes, ingest_status
+            FROM documents
+            ORDER BY path
+            ",
+        )?;
+        let rows = statement.query_map([], |row| {
+            Ok(DocumentRecord {
+                id: row.get(0)?,
+                path: row.get(1)?,
+                file_type: row.get(2)?,
+                content_hash: row.get(3)?,
+                modified_at: row.get(4)?,
+                size_bytes: row.get::<_, i64>(5)? as u64,
+                ingest_status: row.get(6)?,
+            })
+        })?;
+
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(Into::into)
+    }
+
     pub fn insert_ai_call(&self, call: &AiCallRecord) -> Result<()> {
         self.connection.execute(
             "
@@ -273,14 +348,16 @@ impl MetadataStore {
                 purpose,
                 input_hash,
                 output_hash,
+                trace_id,
                 token_estimate,
                 redaction_applied,
                 error_category,
                 status
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
             ON CONFLICT(id) DO UPDATE SET
                 output_hash = excluded.output_hash,
+                trace_id = excluded.trace_id,
                 token_estimate = excluded.token_estimate,
                 redaction_applied = excluded.redaction_applied,
                 error_category = excluded.error_category,
@@ -294,6 +371,7 @@ impl MetadataStore {
                 call.purpose,
                 call.input_hash,
                 call.output_hash,
+                call.trace_id,
                 call.token_estimate.map(i64::from),
                 i64::from(call.redaction_applied),
                 call.error_category,
@@ -314,6 +392,7 @@ impl MetadataStore {
                 purpose,
                 input_hash,
                 output_hash,
+                trace_id,
                 token_estimate,
                 redaction_applied,
                 error_category,
@@ -323,7 +402,7 @@ impl MetadataStore {
             ",
         )?;
         let rows = statement.query_map([], |row| {
-            let token_estimate = row.get::<_, Option<i64>>(7)?;
+            let token_estimate = row.get::<_, Option<i64>>(8)?;
             Ok(AiCallRecord {
                 id: row.get(0)?,
                 task_id: row.get(1)?,
@@ -332,10 +411,11 @@ impl MetadataStore {
                 purpose: row.get(4)?,
                 input_hash: row.get(5)?,
                 output_hash: row.get(6)?,
+                trace_id: row.get(7)?,
                 token_estimate: token_estimate.map(|value| value as u32),
-                redaction_applied: row.get::<_, i64>(8)? != 0,
-                error_category: row.get(9)?,
-                status: row.get(10)?,
+                redaction_applied: row.get::<_, i64>(9)? != 0,
+                error_category: row.get(10)?,
+                status: row.get(11)?,
             })
         })?;
 
@@ -353,6 +433,20 @@ pub struct DocumentRecord {
     pub modified_at: String,
     pub size_bytes: u64,
     pub ingest_status: String,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct ChunkInsert<'a> {
+    pub id: &'a str,
+    pub document_id: &'a str,
+    pub kind: &'a str,
+    pub text: &'a str,
+    pub page: Option<u32>,
+    pub slide: Option<u32>,
+    pub source_range: Option<&'a str>,
+    pub artifact_path: Option<&'a str>,
+    pub confidence: Option<u8>,
+    pub ai_generated: bool,
 }
 
 impl DocumentRecord {
@@ -394,6 +488,10 @@ pub struct SearchResult {
     pub document_path: String,
     pub snippet: String,
     pub score: f64,
+    pub page: Option<u32>,
+    pub slide: Option<u32>,
+    pub source_range: Option<String>,
+    pub artifact_path: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -405,6 +503,7 @@ pub struct AiCallRecord {
     pub purpose: String,
     pub input_hash: String,
     pub output_hash: Option<String>,
+    pub trace_id: Option<String>,
     pub token_estimate: Option<u32>,
     pub redaction_applied: bool,
     pub error_category: Option<String>,
@@ -435,12 +534,26 @@ impl AiCallRecord {
             purpose,
             input_hash,
             output_hash: None,
+            trace_id: None,
             token_estimate: Some(0),
             redaction_applied: false,
             error_category: None,
             status,
         }
     }
+}
+
+fn ensure_ai_calls_trace_id_column(connection: &Connection) -> Result<()> {
+    let mut statement = connection.prepare("PRAGMA table_info(ai_calls)")?;
+    let columns = statement.query_map([], |row| row.get::<_, String>(1))?;
+    let has_trace_id = columns
+        .collect::<rusqlite::Result<Vec<_>>>()?
+        .iter()
+        .any(|name| name == "trace_id");
+    if !has_trace_id {
+        connection.execute("ALTER TABLE ai_calls ADD COLUMN trace_id TEXT", [])?;
+    }
+    Ok(())
 }
 
 fn ensure_ai_calls_error_category_column(connection: &Connection) -> Result<()> {
@@ -543,6 +656,35 @@ mod tests {
     }
 
     #[test]
+    fn search_results_include_chunk_location_metadata() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = MetadataStore::open(dir.path().join("metadata.sqlite")).unwrap();
+        let doc = DocumentRecord::new_for_test("doc-1", "slides.pptx", "application/pptx");
+        store.upsert_document(&doc).unwrap();
+        store
+            .insert_chunk_with_metadata(ChunkInsert {
+                id: "chunk-slide-2",
+                document_id: "doc-1",
+                kind: "text",
+                text: "第二页风险点",
+                page: None,
+                slide: Some(2),
+                source_range: Some("slide:2"),
+                artifact_path: Some("slides.pptx"),
+                confidence: Some(95),
+                ai_generated: false,
+            })
+            .unwrap();
+
+        let results = store.search_text("风险点", 5).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].chunk_id, "chunk-slide-2");
+        assert_eq!(results[0].slide, Some(2));
+        assert_eq!(results[0].source_range.as_deref(), Some("slide:2"));
+        assert_eq!(results[0].artifact_path.as_deref(), Some("slides.pptx"));
+    }
+
+    #[test]
     fn stores_and_lists_ai_call_records() {
         let dir = tempfile::tempdir().unwrap();
         let store = MetadataStore::open(dir.path().join("metadata.sqlite")).unwrap();
@@ -596,5 +738,17 @@ mod tests {
         assert_eq!(calls[0].status, "failed");
         assert_eq!(calls[0].error_category.as_deref(), Some("api_key_missing"));
         assert_eq!(calls[0].input_hash, "input-hash-only");
+    }
+
+    #[test]
+    fn stores_ai_call_trace_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = MetadataStore::open(dir.path().join("metadata.sqlite")).unwrap();
+        let mut record = AiCallRecord::new("mock", "mock-ai", "answer", "input-hash", "completed");
+        record.trace_id = Some("trace-123".to_string());
+        store.insert_ai_call(&record).unwrap();
+
+        let calls = store.list_ai_calls().unwrap();
+        assert_eq!(calls[0].trace_id.as_deref(), Some("trace-123"));
     }
 }

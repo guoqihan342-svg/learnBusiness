@@ -2,12 +2,13 @@ use anyhow::Result;
 
 use crate::ai::{AiProvider, AiRuntime, AiTextChunk, MockAiProvider};
 use crate::config::DEFAULT_CONTEXT_CHUNKS;
+use crate::models::Citation;
 use crate::store::{MetadataStore, SearchResult};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct QaAnswer {
     pub answer: String,
-    pub sources: Vec<String>,
+    pub citations: Vec<Citation>,
 }
 
 pub struct QaEngine<P: AiProvider> {
@@ -42,7 +43,7 @@ impl<P: AiProvider> QaEngine<P> {
         if results.is_empty() {
             return Ok(QaAnswer {
                 answer: "未找到相关来源。".to_string(),
-                sources: Vec::new(),
+                citations: Vec::new(),
             });
         }
 
@@ -53,7 +54,7 @@ impl<P: AiProvider> QaEngine<P> {
         let answer = self.provider.answer(question, &contexts)?;
         Ok(QaAnswer {
             answer: answer.text,
-            sources: unique_sources(&results),
+            citations: citations_from_results(&results),
         })
     }
 }
@@ -65,14 +66,27 @@ pub fn answer_workspace(
     AiRuntime::open(workspace_root)?.answer(question)
 }
 
-fn unique_sources(results: &[SearchResult]) -> Vec<String> {
-    let mut sources = results
+pub fn citations_from_results(results: &[SearchResult]) -> Vec<Citation> {
+    let mut citations = results
         .iter()
-        .map(|result| result.document_path.clone())
+        .map(|result| Citation {
+            chunk_id: result.chunk_id.clone(),
+            document_path: result.document_path.clone(),
+            page: result.page,
+            slide: result.slide,
+            source_range: result.source_range.clone(),
+            artifact_path: result.artifact_path.clone(),
+            score: result.score,
+            snippet: result.snippet.clone(),
+        })
         .collect::<Vec<_>>();
-    sources.sort();
-    sources.dedup();
-    sources
+    citations.sort_by(|left, right| {
+        left.document_path
+            .cmp(&right.document_path)
+            .then_with(|| left.chunk_id.cmp(&right.chunk_id))
+    });
+    citations.dedup_by(|left, right| left.chunk_id == right.chunk_id);
+    citations
 }
 
 #[cfg(test)]
@@ -104,9 +118,10 @@ mod tests {
             .unwrap();
         assert!(
             answer
-                .sources
+                .citations
                 .iter()
-                .any(|source| source.ends_with("process.txt"))
+                .any(|citation| citation.document_path.ends_with("process.txt")
+                    && citation.chunk_id == "chunk-1")
         );
     }
 
@@ -147,7 +162,7 @@ mod tests {
         let answer = QaEngine::new(NoCallProvider)
             .answer(&store, "完全无关的问题")
             .unwrap();
-        assert!(answer.sources.is_empty());
+        assert!(answer.citations.is_empty());
         assert!(answer.answer.contains("未找到相关来源"));
     }
 
@@ -184,7 +199,7 @@ chunk_char_limit = 1600
         }
 
         let answer = answer_workspace(dir.path(), "共同流程是什么？").unwrap();
-        assert_eq!(answer.sources.len(), 1);
+        assert_eq!(answer.citations.len(), 1);
     }
 
     #[test]
@@ -209,6 +224,8 @@ chunk_char_limit = 1600
         let answer = runtime.answer("业务问答上下文怎么处理？").unwrap();
 
         assert!(answer.answer.contains("mock answer"));
-        assert_eq!(answer.sources, vec!["runtime-process.txt".to_string()]);
+        assert_eq!(answer.citations.len(), 1);
+        assert_eq!(answer.citations[0].document_path, "runtime-process.txt");
+        assert_eq!(answer.citations[0].chunk_id, "chunk-runtime");
     }
 }

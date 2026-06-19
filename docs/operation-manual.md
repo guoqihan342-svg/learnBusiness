@@ -85,7 +85,9 @@ cargo run --bin learnBusiness -- ingest .\samples\docs --workspace .\workspace
 
 - `.txt` 和 `.md` 按文本读取。
 - `.pdf` 尝试抽取基础文本。
-- 图片、`.docx`、`.pptx` 会被发现和登记为需要 AI 或后续处理的资料。
+- `.docx` 会从 Office Open XML 的 `word/document.xml` 抽取正文段落。
+- `.pptx` 会从 `ppt/slides/slide*.xml` 抽取幻灯片文本，并保留 slide 编号。
+- 图片会被发现并登记为需要 AI/OCR 后续处理的资料，默认导入不会自动发送给 AI。
 - 不支持的扩展名会忽略。
 - 未变化文件按内容 hash 跳过。
 
@@ -108,6 +110,15 @@ cargo run --bin learnBusiness -- ask --workspace .\workspace "这个业务的核
 ```
 
 问答会先在本地 FTS 索引里检索相关 chunk，再把少量上下文交给当前 AI provider。没有检索命中时不会调用 AI。
+
+命中来源会输出可定位引用，例如：
+
+```text
+来源:
+- docs\process.pptx chunk=... score=-1.2345 slide=2
+```
+
+`score` 来自 SQLite FTS5 排序，数值用于判断同一次检索中的相对相关性；`slide` 或 `page` 存在时可用于回到原资料核对。
 
 建议：
 
@@ -148,6 +159,7 @@ dry-run 会计算图片 hash、识别 MIME 类型、写入一条 AI 调用审计
 - `redaction`
 - `token_estimate`
 - `local_provider`
+- `trace_id` 可通过 `inspect-ai` 查看
 
 当前字段名 `local_provider` 表示配置的 `base_url` 是否为 loopback HTTP 端点，不表示一定使用本地模型。
 
@@ -163,6 +175,7 @@ cargo run --bin learnBusiness -- inspect-ai --workspace .\workspace
 - `provider`
 - `model`
 - `status`
+- `trace_id`
 - `input_hash`
 - `output_hash`
 - `redaction`
@@ -170,6 +183,12 @@ cargo run --bin learnBusiness -- inspect-ai --workspace .\workspace
 - `error_category`
 
 建议在接入真实 HTTP AI 前，先用 `describe-image --dry-run-ai` 和 `inspect-ai` 验证审计链路。
+
+按 trace id 过滤：
+
+```powershell
+cargo run --bin learnBusiness -- inspect-ai --workspace .\workspace --trace <trace_id>
+```
 
 ## 配置说明
 
@@ -271,7 +290,7 @@ cargo run --bin learnBusiness -- ask --workspace .\workspace "客户准入规则
 
 ### `.docx` 或 `.pptx` 导入后问不到内容怎么办？
 
-当前版本能发现这些文件并标记需要后续 AI/OCR 处理，但导入阶段尚未自动抽取正文。可先把关键内容导出为 `.md`、`.txt` 或可抽取文本的 PDF。
+当前版本会抽取 Office Open XML 中的正文段落和幻灯片文本，但复杂版面、嵌入图片、SmartArt、备注和扫描件仍可能抽不到。可先把关键内容导出为 `.md`、`.txt` 或可抽取文本的 PDF；后续可接 OCR 或多模态 AI 补全。
 
 ### 图片 dry-run 为什么不生成真实说明？
 

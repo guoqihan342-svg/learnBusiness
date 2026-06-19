@@ -60,16 +60,16 @@ X-App = "learnBusiness"
 | `document_id` | 所属文档 id | ingest 流程 | 可关联到 documents |
 | `kind` | chunk 类型 | 当前主要为 `text` | 风险较低 |
 | `text` | chunk 原文 | 文本/PDF 抽取后切分 | 高风险，可能包含完整业务规则或敏感信息 |
-| `page` | 当前 chunk 序号 | ingest 流程 | 风险较低 |
-| `slide` | 幻灯片序号 | 预留字段 | 风险较低 |
-| `source_range` | 原文范围 | 预留字段 | 未来可能暴露页码/段落 |
-| `artifact_path` | artifact 路径 | 预留字段 | 可能暴露本地路径 |
+| `page` | 页码或可用位置 | 抽取器/ingest 流程 | 风险较低 |
+| `slide` | 幻灯片序号 | PPTX 抽取器 | 风险较低 |
+| `source_range` | 原文范围 | 抽取器/ingest 流程 | 可能暴露页码/段落 |
+| `artifact_path` | artifact 路径 | 抽取器/ingest 流程 | 可能暴露本地路径 |
 | `confidence` | 抽取置信度 | 预留字段 | 风险较低 |
 | `ai_generated` | 是否 AI 生成 | 当前默认为 false | 可暴露内容来源 |
 | `content_hash` | chunk 文本 hash | `text` hash | 不含原文 |
 | `created_at` | 创建时间 | SQLite 默认时间 | 风险较低 |
 
-长文本按 `chunk_char_limit` 切分，默认 1600 字符。文档内容变化时，旧 chunk 和旧 FTS 记录会先删除，再写入新 chunk。
+长文本按 `chunk_char_limit` 切分，默认 1600 字符。文档内容变化时，旧 chunk 和旧 FTS 记录会先删除，再写入新 chunk。`.docx` 正文会以文本 chunk 入库；`.pptx` 幻灯片文本会写入文本 chunk，并记录 `slide` 编号。
 
 ### chunks_fts
 
@@ -86,13 +86,14 @@ X-App = "learnBusiness"
 | `purpose` | 调用目的 | `answer`、`describe_image` 等 | 风险较低 |
 | `input_hash` | 输入 hash | 问题+上下文或图片内容 hash | 不含原文 |
 | `output_hash` | 输出 hash | 成功返回后计算 | 不保存输出正文 |
+| `trace_id` | trace 关联标识 | `AiRuntime` | 不含原文，可定位 trace 日志 |
 | `token_estimate` | token 估算 | runtime 轻量估算 | 风险较低 |
 | `redaction_applied` | 是否脱敏 | runtime 判断 | 暴露安全处理状态 |
 | `error_category` | 失败类别 | runtime 分类 | 不保存完整错误正文 |
 | `status` | 调用状态 | `dry_run`、`completed`、`failed` | 风险较低 |
 | `created_at` | 创建时间 | SQLite 默认时间 | 风险较低 |
 
-`ai_calls` 的目标是审计，不是日志正文。它不保存 prompt、上下文原文、图片 base64、请求头值、provider 完整返回体或真实 API key。
+`ai_calls` 的目标是审计，不是日志正文。它不保存 prompt、上下文原文、图片 base64、请求头值、provider 完整返回体或真实 API key。`trace_id` 用于把审计记录和 `.learnBusiness/logs/trace.jsonl` 中的结构化事件关联起来。
 
 ## Trace 日志
 

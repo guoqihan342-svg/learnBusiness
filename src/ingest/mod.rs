@@ -7,9 +7,9 @@ use sha2::{Digest, Sha256};
 
 use crate::config::DEFAULT_CHUNK_CHAR_LIMIT;
 use crate::discover::{DiscoveredDocument, discover_documents};
-use crate::ingest::extract::extract_document_text;
+use crate::ingest::extract::{ExtractedChunk, extract_document_text};
 use crate::models::{Chunk, ChunkKind};
-use crate::store::{DocumentRecord, MetadataStore};
+use crate::store::{ChunkInsert, DocumentRecord, MetadataStore};
 use crate::workspace::Workspace;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -60,42 +60,76 @@ fn ingest_one(store: &MetadataStore, document: &DiscoveredDocument) -> Result<bo
     }
 
     let extracted = extract_document_text(&document.path, &document.file_type)?;
+    let has_text = !extracted.text.trim().is_empty()
+        || extracted
+            .chunks
+            .iter()
+            .any(|chunk| !chunk.text.trim().is_empty());
+    let ingest_status = if extracted.needs_ai {
+        "needs_ai"
+    } else if has_text {
+        "indexed"
+    } else {
+        "empty"
+    };
     let record = DocumentRecord::new(
         &document_id,
         document.path.to_string_lossy(),
         &document.file_type,
         &document.sha256,
         document.size_bytes,
-        "indexed",
+        ingest_status,
     );
     store.upsert_document(&record)?;
     store.delete_chunks_for_document(&document_id)?;
 
-    if extracted.text.trim().is_empty() {
+    if !has_text {
         return Ok(false);
     }
 
-    for (index, text) in split_text_chunks(&extracted.text, DEFAULT_CHUNK_CHAR_LIMIT)
-        .into_iter()
-        .enumerate()
-    {
-        let chunk_hash = sha256_text(&text);
-        let chunk_number = (index + 1) as u32;
-        let chunk_id = Chunk::stable_id(
-            &document_id,
-            ChunkKind::Text,
-            Some(chunk_number),
-            None,
-            &chunk_hash,
-        );
-        store.insert_chunk(
-            &chunk_id,
-            &document_id,
-            "text",
-            &text,
-            Some(chunk_number),
-            None,
-        )?;
+    let chunks = if extracted.chunks.is_empty() {
+        vec![ExtractedChunk {
+            text: extracted.text,
+            page: None,
+            slide: None,
+            source_range: None,
+            artifact_path: extracted.artifact_path,
+            confidence: None,
+            ai_generated: false,
+        }]
+    } else {
+        extracted.chunks
+    };
+
+    let mut chunk_number = 0_u32;
+    for chunk in chunks {
+        for text in split_text_chunks(&chunk.text, DEFAULT_CHUNK_CHAR_LIMIT) {
+            chunk_number += 1;
+            let chunk_hash = sha256_text(&text);
+            let chunk_id = Chunk::stable_id(
+                &document_id,
+                ChunkKind::Text,
+                Some(chunk.page.unwrap_or(chunk_number)),
+                chunk.slide,
+                &chunk_hash,
+            );
+            let artifact_path = chunk
+                .artifact_path
+                .as_ref()
+                .map(|path| path.to_string_lossy().to_string());
+            store.insert_chunk_with_metadata(ChunkInsert {
+                id: &chunk_id,
+                document_id: &document_id,
+                kind: "text",
+                text: &text,
+                page: chunk.page,
+                slide: chunk.slide,
+                source_range: chunk.source_range.as_deref(),
+                artifact_path: artifact_path.as_deref(),
+                confidence: chunk.confidence,
+                ai_generated: chunk.ai_generated,
+            })?;
+        }
     }
     Ok(true)
 }
@@ -141,6 +175,8 @@ fn sha256_text(text: &str) -> String {
 mod tests {
     use super::*;
     use crate::store::MetadataStore;
+    use std::io::Write;
+    use zip::write::SimpleFileOptions;
 
     #[test]
     fn repeated_ingest_skips_unchanged_and_replaces_stale_chunks() {
@@ -184,5 +220,81 @@ mod tests {
                 .iter()
                 .all(|chunk| chunk.snippet.chars().count() <= 1600)
         );
+    }
+
+    #[test]
+    fn image_documents_are_recorded_as_needing_ai_without_chunks() {
+        let workspace = tempfile::tempdir().unwrap();
+        let docs = tempfile::tempdir().unwrap();
+        let file = docs.path().join("flow.png");
+        std::fs::write(&file, b"not a real image but enough for hashing").unwrap();
+
+        let summary = run_ingest(workspace.path(), docs.path()).unwrap();
+        assert_eq!(summary.scanned, 1);
+        assert_eq!(summary.warnings, 0);
+
+        let store =
+            MetadataStore::open(Workspace::open(workspace.path()).metadata_db_path()).unwrap();
+        let documents = store.list_documents().unwrap();
+        assert_eq!(documents.len(), 1);
+        assert_eq!(documents[0].ingest_status, "needs_ai");
+        assert!(store.list_chunks(10).unwrap().is_empty());
+    }
+
+    #[test]
+    fn docx_ingest_indexes_extracted_text() {
+        let workspace = tempfile::tempdir().unwrap();
+        let docs = tempfile::tempdir().unwrap();
+        let file = docs.path().join("process.docx");
+        write_zip_entries(
+            &file,
+            &[(
+                "word/document.xml",
+                r#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>合同审批流程</w:t></w:r></w:p></w:body></w:document>"#,
+            )],
+        );
+
+        let summary = run_ingest(workspace.path(), docs.path()).unwrap();
+        assert_eq!(summary.indexed, 1);
+
+        let store =
+            MetadataStore::open(Workspace::open(workspace.path()).metadata_db_path()).unwrap();
+        let results = store.search_text("合同审批", 5).unwrap();
+        assert_eq!(results.len(), 1);
+        assert!(results[0].document_path.ends_with("process.docx"));
+    }
+
+    #[test]
+    fn pptx_ingest_indexes_slide_text_with_slide_number() {
+        let workspace = tempfile::tempdir().unwrap();
+        let docs = tempfile::tempdir().unwrap();
+        let file = docs.path().join("deck.pptx");
+        write_zip_entries(
+            &file,
+            &[(
+                "ppt/slides/slide2.xml",
+                r#"<p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"><p:cSld><p:spTree><p:sp><p:txBody><a:p><a:r><a:t>第二页风险控制</a:t></a:r></a:p></p:txBody></p:sp></p:spTree></p:cSld></p:sld>"#,
+            )],
+        );
+
+        let summary = run_ingest(workspace.path(), docs.path()).unwrap();
+        assert_eq!(summary.indexed, 1);
+
+        let store =
+            MetadataStore::open(Workspace::open(workspace.path()).metadata_db_path()).unwrap();
+        let results = store.search_text("风险控制", 5).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].slide, Some(2));
+    }
+
+    fn write_zip_entries(path: &Path, entries: &[(&str, &str)]) {
+        let file = std::fs::File::create(path).unwrap();
+        let mut zip = zip::ZipWriter::new(file);
+        let options = SimpleFileOptions::default();
+        for (name, content) in entries {
+            zip.start_file(*name, options).unwrap();
+            zip.write_all(content.as_bytes()).unwrap();
+        }
+        zip.finish().unwrap();
     }
 }

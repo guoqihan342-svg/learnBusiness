@@ -13,8 +13,8 @@ use crate::ai::{
 };
 use crate::config::AppConfig;
 use crate::discover::{guess_file_type, sha256_file};
-use crate::qa::QaAnswer;
-use crate::store::{AiCallRecord, MetadataStore, SearchResult};
+use crate::qa::{QaAnswer, citations_from_results};
+use crate::store::{AiCallRecord, MetadataStore};
 use crate::trace::{TraceEvent, TraceLogger};
 use crate::workspace::Workspace;
 
@@ -84,7 +84,7 @@ impl AiRuntime {
         if results.is_empty() {
             return Ok(QaAnswer {
                 answer: "未找到相关来源。".to_string(),
-                sources: Vec::new(),
+                citations: Vec::new(),
             });
         }
 
@@ -146,7 +146,7 @@ impl AiRuntime {
                     output_hash: None,
                     error_category: Some(classify_ai_error(&error)),
                 };
-                self.record_ai_call(audit.clone())?;
+                self.record_ai_call(&trace_id, audit.clone())?;
                 self.trace_ai_call(&trace_id, &audit, Some(started.elapsed().as_millis()))?;
                 return Err(error).context("AI answer provider call failed");
             }
@@ -162,11 +162,11 @@ impl AiRuntime {
             output_hash: Some(output_hash),
             error_category: None,
         };
-        self.record_ai_call(audit.clone())?;
+        self.record_ai_call(&trace_id, audit.clone())?;
         self.trace_ai_call(&trace_id, &audit, Some(started.elapsed().as_millis()))?;
         Ok(QaAnswer {
             answer: answer.text,
-            sources: unique_sources(&results),
+            citations: citations_from_results(&results),
         })
     }
 
@@ -199,7 +199,7 @@ impl AiRuntime {
                 output_hash: None,
                 error_category: None,
             };
-            self.record_ai_call(audit.clone())?;
+            self.record_ai_call(&trace_id, audit.clone())?;
             self.trace_ai_call(&trace_id, &audit, Some(0))?;
             return Ok(ImageDescriptionResult {
                 image_path,
@@ -245,7 +245,7 @@ impl AiRuntime {
                     output_hash: None,
                     error_category: Some(classify_ai_error(&error)),
                 };
-                self.record_ai_call(audit.clone())?;
+                self.record_ai_call(&trace_id, audit.clone())?;
                 self.trace_ai_call(&trace_id, &audit, Some(started.elapsed().as_millis()))?;
                 return Err(error).context("AI image provider call failed");
             }
@@ -261,7 +261,7 @@ impl AiRuntime {
             output_hash: Some(output_hash.clone()),
             error_category: None,
         };
-        self.record_ai_call(audit.clone())?;
+        self.record_ai_call(&trace_id, audit.clone())?;
         self.trace_ai_call(&trace_id, &audit, Some(started.elapsed().as_millis()))?;
         self.write_ai_cache(
             &understanding.model,
@@ -290,7 +290,7 @@ impl AiRuntime {
         self.config.safety.redact_before_external_ai && !self.descriptor.local_only
     }
 
-    fn record_ai_call(&self, audit: AiCallAudit<'_>) -> Result<()> {
+    fn record_ai_call(&self, trace_id: &str, audit: AiCallAudit<'_>) -> Result<()> {
         let store = MetadataStore::open(self.workspace.metadata_db_path())?;
         let mut record = AiCallRecord::new(
             &self.config.ai.provider,
@@ -299,6 +299,7 @@ impl AiRuntime {
             audit.input_hash,
             audit.status,
         );
+        record.trace_id = Some(trace_id.to_string());
         record.token_estimate = Some(audit.token_estimate);
         record.redaction_applied = audit.redaction_applied;
         record.output_hash = audit.output_hash;
@@ -393,16 +394,6 @@ fn answer_input_hash(question: &str, contexts: &[AiTextChunk]) -> String {
         hasher.update(context.text.as_bytes());
     }
     format!("{:x}", hasher.finalize())
-}
-
-fn unique_sources(results: &[SearchResult]) -> Vec<String> {
-    let mut sources = results
-        .iter()
-        .map(|result| result.document_path.clone())
-        .collect::<Vec<_>>();
-    sources.sort();
-    sources.dedup();
-    sources
 }
 
 fn sha256_text(text: &str) -> String {
@@ -510,6 +501,7 @@ mod tests {
         assert_eq!(calls[0].status, "failed");
         assert_eq!(calls[0].error_category.as_deref(), Some("provider_failed"));
         assert_eq!(calls[0].purpose, "answer");
+        assert!(calls[0].trace_id.is_some());
     }
 
     #[test]
@@ -537,7 +529,10 @@ mod tests {
         let _ = runtime.answer("为什么失败 13800138000？").unwrap_err();
 
         let trace_log = std::fs::read_to_string(trace_path).unwrap();
+        let calls = store.list_ai_calls().unwrap();
+        let trace_id = calls[0].trace_id.as_ref().unwrap();
         assert!(trace_log.contains("\"status\":\"failed\""));
+        assert!(trace_log.contains(trace_id));
         assert!(trace_log.contains("\"error_category\":\"provider_failed\""));
         assert!(trace_log.contains("\"purpose\":\"answer\""));
         assert!(!trace_log.contains("敏感业务正文"));
