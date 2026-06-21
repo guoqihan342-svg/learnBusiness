@@ -194,6 +194,10 @@ impl CommandPermissionPolicy {
         Self::new("inspect-ai", vec![Permission::ReadLocal])
     }
 
+    pub fn inspect_trace() -> Self {
+        Self::new("inspect-trace", vec![Permission::ReadLocal])
+    }
+
     pub fn search() -> Self {
         Self::new("search", vec![Permission::ReadLocal])
     }

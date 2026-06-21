@@ -46,12 +46,21 @@ pub fn is_supported_document(path: &Path) -> bool {
             .as_deref(),
         Some("txt")
             | Some("md")
+            | Some("csv")
+            | Some("tsv")
+            | Some("json")
+            | Some("html")
+            | Some("htm")
+            | Some("xml")
+            | Some("yaml")
+            | Some("yml")
             | Some("pdf")
             | Some("png")
             | Some("jpg")
             | Some("jpeg")
             | Some("webp")
             | Some("docx")
+            | Some("xlsx")
             | Some("pptx")
     )
 }
@@ -65,12 +74,21 @@ pub fn guess_file_type(path: &Path) -> String {
     {
         Some("txt") => "text/plain".to_string(),
         Some("md") => "text/markdown".to_string(),
+        Some("csv") => "text/csv".to_string(),
+        Some("tsv") => "text/tab-separated-values".to_string(),
+        Some("json") => "application/json".to_string(),
+        Some("html") | Some("htm") => "text/html".to_string(),
+        Some("xml") => "application/xml".to_string(),
+        Some("yaml") | Some("yml") => "application/yaml".to_string(),
         Some("pdf") => "application/pdf".to_string(),
         Some("docx") => {
             "application/vnd.openxmlformats-officedocument.wordprocessingml.document".to_string()
         }
         Some("pptx") => {
             "application/vnd.openxmlformats-officedocument.presentationml.presentation".to_string()
+        }
+        Some("xlsx") => {
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet".to_string()
         }
         _ => mime_guess::from_path(path)
             .first_or_octet_stream()
@@ -107,5 +125,39 @@ mod tests {
         assert_eq!(docs.len(), 1);
         assert_eq!(docs[0].file_type, "text/plain");
         assert_eq!(docs[0].sha256.len(), 64);
+    }
+
+    #[test]
+    fn discovers_structured_and_spreadsheet_documents() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in [
+            "table.csv",
+            "table.tsv",
+            "object.json",
+            "page.html",
+            "data.xml",
+            "config.yaml",
+            "config.yml",
+            "sheet.xlsx",
+        ] {
+            std::fs::write(dir.path().join(name), "business data").unwrap();
+        }
+
+        let docs = discover_documents(dir.path()).unwrap();
+        let types = docs
+            .iter()
+            .map(|doc| doc.file_type.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(docs.len(), 8);
+        assert!(types.contains(&"text/csv"));
+        assert!(types.contains(&"text/tab-separated-values"));
+        assert!(types.contains(&"application/json"));
+        assert!(types.contains(&"text/html"));
+        assert!(types.contains(&"application/xml"));
+        assert!(types.contains(&"application/yaml"));
+        assert!(
+            types.contains(&"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        );
     }
 }

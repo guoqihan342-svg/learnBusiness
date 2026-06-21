@@ -32,6 +32,7 @@ learnBusiness 是一个本地优先的业务文档理解工具，用于把散落
     extraction/
   logs/
     trace.jsonl
+    operations.jsonl
 ```
 
 除用户显式指定的报告输出路径外，运行时状态应尽量留在 `.learnBusiness/` 内。该目录不应提交到公开仓库。
@@ -54,11 +55,11 @@ learnBusiness 是一个本地优先的业务文档理解工具，用于把散落
 
 ### main
 
-CLI 编排层，解析 `init`、`ingest`、`status`、`inspect-ai`、`report`、`ask`、`describe-image` 命令，并把实际工作交给具体模块。
+CLI 编排层，解析 `init`、`ingest`、`status`、`inspect-ai`、`inspect-trace`、`report`、`ask`、`describe-image` 命令，并把实际工作交给具体模块。
 
 ### workspace
 
-创建和定位 `.learnBusiness/`，暴露配置、SQLite、缓存、artifact 和 trace 日志路径。
+创建和定位 `.learnBusiness/`，暴露配置、SQLite、缓存、artifact、AI trace 和 operation trace 日志路径。
 
 ### discover
 
@@ -137,23 +138,27 @@ flowchart TD
 
 ### ingest
 
-`main` -> `run_ingest` -> `discover` -> `extract` -> `store.documents/chunks/chunks_fts`。
+`main` -> `run_ingest` -> `OperationTraceLogger` -> `discover` -> `extract` -> `store.documents/chunks/chunks_fts` -> `OperationTraceLogger`。
 
 ### ask
 
-`main` -> `qa` -> `AiRuntime::answer` -> `store.search_text` -> top-k/截断/脱敏 -> `AiProvider.answer` -> `store.ai_calls` -> answer + structured citations。
+`main` -> `qa` -> `AiRuntime::answer` -> `OperationTraceLogger` -> `store.search_text` -> top-k/截断/脱敏 -> `AiProvider.answer` -> `store.ai_calls` -> answer + structured citations + reasoning steps。
 
 ### search
 
-`main` -> `store.search_text` -> 输出 chunk、kind、score、页码/幻灯片、artifact 和 snippet。该路径不构造 `AiRuntime`，不调用 AI provider。
+`main` -> `OperationTraceLogger` -> `store.search_text` -> 输出 chunk、kind、score、页码/幻灯片、artifact 和 snippet。该路径不构造 `AiRuntime`，不调用 AI provider。
 
 ### describe-image
 
-`main` -> `AiRuntime::describe_image` -> 图片 hash/MIME -> dry-run 审计或 `AiProvider.describe_image` -> `store.ai_calls` -> `cache/ai`。
+`main` -> `AiRuntime::describe_image` -> `OperationTraceLogger` -> 图片 hash/MIME -> dry-run 审计或 `AiProvider.describe_image` -> `store.ai_calls` -> `cache/ai`。
 
 ### inspect-ai
 
 `main` -> `store.list_ai_calls` -> 可选按 `--trace <trace_id>` 过滤 -> 输出 provider、model、purpose、status、trace id、hash、token、redaction、error_category。
+
+### inspect-trace
+
+`main` -> `OperationTraceLogger::read` -> 可选按 `--trace <trace_id>` 过滤 -> 输出 operation、component、step、status、hash、数量、token、脱敏、耗时和错误分类。
 
 ## 权限网关
 
@@ -163,7 +168,7 @@ flowchart TD
 - `ingest`：需要 `ReadLocal` 和 `WriteWorkspace`。
 - `ingest --describe-images --dry-run-ai`：需要 `ReadLocal` 和 `WriteWorkspace`。
 - 非 dry-run `ingest --describe-images`：额外需要 `AiExternal` 和 `ExternalNetwork`。
-- `status`、`inspect-ai`：需要 `ReadLocal`。
+- `status`、`inspect-ai`、`inspect-trace`：需要 `ReadLocal`。
 - `search`：需要 `ReadLocal`。
 - `report`：需要 `ReadLocal` 和 `WriteWorkspace`。
 - `ask`：需要 `ReadLocal`、`WriteWorkspace` 和 `AiExternal`。
@@ -177,7 +182,7 @@ flowchart TD
 - `.learnBusiness/` 不提交到仓库。
 - `app.toml` 不保存真实密钥值。
 - `[ai.headers]` 允许保存 header 名和环境变量占位符，不应保存真实 token。
-- `ai_calls` 和 `trace.jsonl` 不保存 prompt、chunk 正文、图片 base64、请求头值或 provider 完整返回体。
+- `ai_calls`、`trace.jsonl` 和 `operations.jsonl` 不保存 prompt、chunk 正文、图片 base64、请求头值或 provider 完整返回体。
 - 远程 HTTP provider 默认走脱敏；loopback HTTP 端点默认不强制脱敏，但仍只保存审计元数据。
 - 图片 base64 只进入 provider 请求体，不进入审计或 trace。
 
@@ -187,6 +192,7 @@ flowchart TD
 - 稳定 ID：文档和 chunk 使用稳定 hash/UUID，便于替换和缓存。
 - 有界切块：默认 `chunk_char_limit = 1600`。
 - 有界上下文：默认 `context_chunks = 5`，运行时限制在 1 到 20。
+- 安全推算过程：`ask` 的“推算过程”只来自本地运行元数据，不额外调用 AI，不增加 provider 上下文。
 - 空命中短路：没有检索来源时不调用 AI。
 - 检索调试：`search` 命令只访问本地 FTS，适合在调用 AI 前确认命中质量。
 - AI 缓存：按 provider、model、purpose、prompt version、content hash 和脱敏状态隔离。
@@ -200,7 +206,7 @@ flowchart TD
 
 ## 当前限制
 
-- Word、PPT 已支持 Office Open XML 正文抽取；复杂版面、嵌入图片、备注、扫描件 OCR 和图片内容入库仍待后续增强。
+- Word、PPT、CSV、TSV、JSON、HTML、XML、YAML/YML 和 XLSX 已支持轻量正文抽取；复杂版面、嵌入图片、公式计算、备注、扫描件 OCR 和图片内容入库仍待后续增强。
 - 向量目录已预留，但当前检索主要依赖 SQLite FTS5。
 - report 是轻量报告草稿，不等同完整业务建模。
 - redaction 当前是正则级脱敏，只覆盖常见邮箱、手机号、长数字和 `sk-` 样式密钥。

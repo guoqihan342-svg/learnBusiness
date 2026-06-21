@@ -9,6 +9,29 @@ use crate::store::{MetadataStore, SearchResult};
 pub struct QaAnswer {
     pub answer: String,
     pub citations: Vec<Citation>,
+    pub reasoning_steps: Vec<ReasoningStep>,
+    pub trace_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReasoningStep {
+    pub step: String,
+    pub status: String,
+    pub detail: String,
+}
+
+impl ReasoningStep {
+    pub fn new(
+        step: impl Into<String>,
+        status: impl Into<String>,
+        detail: impl Into<String>,
+    ) -> Self {
+        Self {
+            step: step.into(),
+            status: status.into(),
+            detail: detail.into(),
+        }
+    }
 }
 
 pub struct QaEngine<P: AiProvider> {
@@ -44,6 +67,11 @@ impl<P: AiProvider> QaEngine<P> {
             return Ok(QaAnswer {
                 answer: "未找到相关来源。".to_string(),
                 citations: Vec::new(),
+                reasoning_steps: vec![
+                    ReasoningStep::new("local_search", "no_match", "hits=0"),
+                    ReasoningStep::new("ai_call", "skipped", "reason=no_local_sources"),
+                ],
+                trace_id: None,
             });
         }
 
@@ -55,6 +83,25 @@ impl<P: AiProvider> QaEngine<P> {
         Ok(QaAnswer {
             answer: answer.text,
             citations: citations_from_results(&results),
+            reasoning_steps: vec![
+                ReasoningStep::new(
+                    "local_search",
+                    "completed",
+                    format!("hits={}", results.len()),
+                ),
+                ReasoningStep::new(
+                    "context_selection",
+                    "completed",
+                    format!("selected_chunks={}", contexts.len()),
+                ),
+                ReasoningStep::new("ai_call", "completed", "provider=direct"),
+                ReasoningStep::new(
+                    "citation_binding",
+                    "completed",
+                    format!("citations={}", results.len()),
+                ),
+            ],
+            trace_id: None,
         })
     }
 }
@@ -227,5 +274,77 @@ chunk_char_limit = 1600
         assert_eq!(answer.citations.len(), 1);
         assert_eq!(answer.citations[0].document_path, "runtime-process.txt");
         assert_eq!(answer.citations[0].chunk_id, "chunk-runtime");
+    }
+
+    #[test]
+    fn ai_runtime_answer_returns_safe_reasoning_steps() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = Workspace::init(dir.path()).unwrap();
+        let store = MetadataStore::open(workspace.metadata_db_path()).unwrap();
+        let doc = DocumentRecord::new_for_test("doc-1", "approval.txt", "text/plain");
+        store.upsert_document(&doc).unwrap();
+        store
+            .insert_chunk(
+                "chunk-approval",
+                "doc-1",
+                "text",
+                "approval workflow requires reviewer confirmation",
+                None,
+                None,
+            )
+            .unwrap();
+
+        let runtime = AiRuntime::open(dir.path()).unwrap();
+        let answer = runtime.answer("approval workflow").unwrap();
+        let steps = answer
+            .reasoning_steps
+            .iter()
+            .map(|step| {
+                (
+                    step.step.as_str(),
+                    step.status.as_str(),
+                    step.detail.as_str(),
+                )
+            })
+            .collect::<Vec<_>>();
+
+        assert!(answer.trace_id.is_some());
+        assert!(steps.iter().any(|(step, status, detail)| {
+            *step == "local_search" && *status == "completed" && detail.contains("hits=1")
+        }));
+        assert!(steps.iter().any(|(step, status, detail)| {
+            *step == "context_selection"
+                && *status == "completed"
+                && detail.contains("selected_chunks=1")
+        }));
+        assert!(steps.iter().any(|(step, status, detail)| {
+            *step == "ai_call" && *status == "completed" && detail.contains("token_estimate=")
+        }));
+        assert!(steps.iter().any(|(step, status, detail)| {
+            *step == "citation_binding" && *status == "completed" && detail.contains("citations=1")
+        }));
+    }
+
+    #[test]
+    fn ai_runtime_answer_no_match_returns_short_circuit_reasoning() {
+        let dir = tempfile::tempdir().unwrap();
+        Workspace::init(dir.path()).unwrap();
+
+        let runtime = AiRuntime::open(dir.path()).unwrap();
+        let answer = runtime.answer("nothing indexed").unwrap();
+        assert!(answer.citations.is_empty());
+        assert!(answer.trace_id.is_some());
+        assert!(
+            answer
+                .reasoning_steps
+                .iter()
+                .any(|step| step.step == "local_search" && step.status == "no_match")
+        );
+        assert!(
+            answer
+                .reasoning_steps
+                .iter()
+                .any(|step| step.step == "ai_call" && step.status == "skipped")
+        );
     }
 }

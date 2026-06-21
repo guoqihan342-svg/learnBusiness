@@ -13,9 +13,9 @@ use crate::ai::{
 };
 use crate::config::AppConfig;
 use crate::discover::{guess_file_type, sha256_file};
-use crate::qa::{QaAnswer, citations_from_results};
+use crate::qa::{QaAnswer, ReasoningStep, citations_from_results};
 use crate::store::{AiCallRecord, MetadataStore};
-use crate::trace::{TraceEvent, TraceLogger};
+use crate::trace::{OperationTraceEvent, OperationTraceLogger, TraceEvent, TraceLogger, hash_text};
 use crate::workspace::Workspace;
 
 pub struct AiRuntime {
@@ -80,11 +80,39 @@ impl AiRuntime {
 
     pub fn answer(&self, question: &str) -> Result<QaAnswer> {
         let store = MetadataStore::open(self.workspace.metadata_db_path())?;
+        let question_hash = hash_text(question);
+        let trace_id = new_trace_id("answer", &question_hash);
+        let operation_logger = OperationTraceLogger::new(
+            self.workspace.operation_trace_log_path(),
+            self.config.logging.trace_enabled,
+        );
+        let search_started = Instant::now();
         let results = store.search_text(question, self.config.performance.context_chunks)?;
+        let search_status = if results.is_empty() {
+            "no_match"
+        } else {
+            "completed"
+        };
+        let mut search_event =
+            OperationTraceEvent::new(&trace_id, "ask", "store", "local_search", search_status);
+        search_event.input_hash = Some(question_hash.clone());
+        search_event.result_count = Some(results.len());
+        search_event.elapsed_ms = Some(search_started.elapsed().as_millis());
+        operation_logger.append(&search_event)?;
         if results.is_empty() {
+            let mut skipped =
+                OperationTraceEvent::new(&trace_id, "ask", "AiRuntime", "ai_call", "skipped");
+            skipped.input_hash = Some(question_hash);
+            skipped.message = Some("reason=no_local_sources".to_string());
+            operation_logger.append(&skipped)?;
             return Ok(QaAnswer {
                 answer: "未找到相关来源。".to_string(),
                 citations: Vec::new(),
+                reasoning_steps: vec![
+                    ReasoningStep::new("local_search", "no_match", "hits=0"),
+                    ReasoningStep::new("ai_call", "skipped", "reason=no_local_sources"),
+                ],
+                trace_id: Some(trace_id),
             });
         }
 
@@ -97,6 +125,20 @@ impl AiRuntime {
                 )
             })
             .collect::<Vec<_>>();
+        let mut context_event = OperationTraceEvent::new(
+            &trace_id,
+            "ask",
+            "AiRuntime",
+            "context_selection",
+            "completed",
+        );
+        context_event.result_count = Some(contexts.len());
+        context_event.message = Some(format!(
+            "selected_chunks={} chunk_char_limit={}",
+            contexts.len(),
+            self.config.performance.chunk_char_limit
+        ));
+        operation_logger.append(&context_event)?;
         let redaction_applied = self.should_redact_for_provider();
         let question_for_provider = if redaction_applied {
             redact_sensitive_text(question)
@@ -111,10 +153,16 @@ impl AiRuntime {
         } else {
             contexts
         };
+        let selected_context_count = contexts_for_provider.len();
         let token_estimate =
             estimate_answer_tokens(&question_for_provider, &contexts_for_provider) as u32;
         let input_hash = answer_input_hash(&question_for_provider, &contexts_for_provider);
-        let trace_id = new_trace_id("answer", &input_hash);
+        let mut ai_started_event =
+            OperationTraceEvent::new(&trace_id, "ask", "AiRuntime", "ai_call", "started");
+        ai_started_event.input_hash = Some(input_hash.clone());
+        ai_started_event.token_estimate = Some(token_estimate);
+        ai_started_event.redaction_applied = Some(redaction_applied);
+        operation_logger.append(&ai_started_event)?;
         self.trace_ai_call(
             &trace_id,
             &AiCallAudit {
@@ -148,6 +196,14 @@ impl AiRuntime {
                 };
                 self.record_ai_call(&trace_id, audit.clone())?;
                 self.trace_ai_call(&trace_id, &audit, Some(started.elapsed().as_millis()))?;
+                let mut failed_event =
+                    OperationTraceEvent::new(&trace_id, "ask", "AiRuntime", "ai_call", "failed");
+                failed_event.input_hash = Some(input_hash.clone());
+                failed_event.token_estimate = Some(token_estimate);
+                failed_event.redaction_applied = Some(redaction_applied);
+                failed_event.error_category = audit.error_category.clone();
+                failed_event.elapsed_ms = Some(started.elapsed().as_millis());
+                operation_logger.append(&failed_event)?;
                 return Err(error).context("AI answer provider call failed");
             }
         };
@@ -164,9 +220,56 @@ impl AiRuntime {
         };
         self.record_ai_call(&trace_id, audit.clone())?;
         self.trace_ai_call(&trace_id, &audit, Some(started.elapsed().as_millis()))?;
+        let mut completed_event =
+            OperationTraceEvent::new(&trace_id, "ask", "AiRuntime", "ai_call", "completed");
+        completed_event.input_hash = Some(input_hash.clone());
+        completed_event.output_hash = audit.output_hash.clone();
+        completed_event.token_estimate = Some(token_estimate);
+        completed_event.redaction_applied = Some(redaction_applied);
+        completed_event.elapsed_ms = Some(started.elapsed().as_millis());
+        operation_logger.append(&completed_event)?;
+        let citations = citations_from_results(&results);
+        let mut citation_event =
+            OperationTraceEvent::new(&trace_id, "ask", "qa", "citation_binding", "completed");
+        citation_event.result_count = Some(citations.len());
+        operation_logger.append(&citation_event)?;
         Ok(QaAnswer {
             answer: answer.text,
-            citations: citations_from_results(&results),
+            citations,
+            reasoning_steps: vec![
+                ReasoningStep::new(
+                    "local_search",
+                    "completed",
+                    format!("hits={}", results.len()),
+                ),
+                ReasoningStep::new(
+                    "context_selection",
+                    "completed",
+                    format!(
+                        "selected_chunks={} chunk_char_limit={}",
+                        selected_context_count, self.config.performance.chunk_char_limit
+                    ),
+                ),
+                ReasoningStep::new(
+                    "redaction",
+                    "completed",
+                    format!("redaction_applied={redaction_applied}"),
+                ),
+                ReasoningStep::new(
+                    "ai_call",
+                    "completed",
+                    format!(
+                        "provider={} model={} token_estimate={token_estimate}",
+                        self.config.ai.provider, answer.model
+                    ),
+                ),
+                ReasoningStep::new(
+                    "citation_binding",
+                    "completed",
+                    format!("citations={}", results.len()),
+                ),
+            ],
+            trace_id: Some(trace_id),
         })
     }
 
@@ -182,6 +285,10 @@ impl AiRuntime {
         let redaction_applied = self.should_redact_for_provider();
         let token_estimate = estimate_tokens(prompt) as u32;
         let trace_id = new_trace_id("describe_image", &input_hash);
+        let operation_logger = OperationTraceLogger::new(
+            self.workspace.operation_trace_log_path(),
+            self.config.logging.trace_enabled,
+        );
         let model = if dry_run {
             self.config.ai.vision_model.clone()
         } else {
@@ -201,6 +308,17 @@ impl AiRuntime {
             };
             self.record_ai_call(&trace_id, audit.clone())?;
             self.trace_ai_call(&trace_id, &audit, Some(0))?;
+            let mut event = OperationTraceEvent::new(
+                &trace_id,
+                "describe-image",
+                "AiRuntime",
+                "ai_call",
+                "dry_run",
+            );
+            event.input_hash = Some(input_hash.clone());
+            event.token_estimate = Some(token_estimate);
+            event.redaction_applied = Some(redaction_applied);
+            operation_logger.append(&event)?;
             return Ok(ImageDescriptionResult {
                 image_path,
                 description: None,
@@ -217,6 +335,17 @@ impl AiRuntime {
         }
 
         let image = ImageInput::new(&image_path, &mime_type, &input_hash);
+        let mut started_event = OperationTraceEvent::new(
+            &trace_id,
+            "describe-image",
+            "AiRuntime",
+            "ai_call",
+            "started",
+        );
+        started_event.input_hash = Some(input_hash.clone());
+        started_event.token_estimate = Some(token_estimate);
+        started_event.redaction_applied = Some(redaction_applied);
+        operation_logger.append(&started_event)?;
         self.trace_ai_call(
             &trace_id,
             &AiCallAudit {
@@ -247,6 +376,19 @@ impl AiRuntime {
                 };
                 self.record_ai_call(&trace_id, audit.clone())?;
                 self.trace_ai_call(&trace_id, &audit, Some(started.elapsed().as_millis()))?;
+                let mut failed_event = OperationTraceEvent::new(
+                    &trace_id,
+                    "describe-image",
+                    "AiRuntime",
+                    "ai_call",
+                    "failed",
+                );
+                failed_event.input_hash = Some(input_hash.clone());
+                failed_event.token_estimate = Some(token_estimate);
+                failed_event.redaction_applied = Some(redaction_applied);
+                failed_event.error_category = audit.error_category.clone();
+                failed_event.elapsed_ms = Some(started.elapsed().as_millis());
+                operation_logger.append(&failed_event)?;
                 return Err(error).context("AI image provider call failed");
             }
         };
@@ -263,6 +405,19 @@ impl AiRuntime {
         };
         self.record_ai_call(&trace_id, audit.clone())?;
         self.trace_ai_call(&trace_id, &audit, Some(started.elapsed().as_millis()))?;
+        let mut completed_event = OperationTraceEvent::new(
+            &trace_id,
+            "describe-image",
+            "AiRuntime",
+            "ai_call",
+            "completed",
+        );
+        completed_event.input_hash = Some(input_hash.clone());
+        completed_event.output_hash = audit.output_hash.clone();
+        completed_event.token_estimate = Some(token_estimate);
+        completed_event.redaction_applied = Some(redaction_applied);
+        completed_event.elapsed_ms = Some(started.elapsed().as_millis());
+        operation_logger.append(&completed_event)?;
         self.write_ai_cache(
             &understanding.model,
             "describe_image",

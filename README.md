@@ -147,3 +147,23 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 openspec validate --all
 ```
+
+## 可追溯推算过程与更多文件类型
+
+`ask` 会在答案后输出“推算过程”，展示本地检索、上下文选择、脱敏判断、AI 调用和引用绑定等外部可验证步骤。这里展示的是运行证据链，不是模型隐藏思维链；它只包含 trace id、数量、hash、token 估算和状态，不会额外调用 AI，也不会增加发送给 provider 的正文。
+
+主命令会写入 `.learnBusiness/logs/operations.jsonl`：
+
+- `ingest`：记录发现文档、抽取文档、写入索引和汇总。
+- `search`：记录本地检索、limit 和命中数量，不构造 AI provider。
+- `ask`：记录检索、top-k 选择、AI 调用和引用绑定。
+- `describe-image`：记录 dry-run、真实调用、失败或完成状态。
+
+查看步骤日志：
+
+```powershell
+cargo run --bin learnBusiness -- inspect-trace --workspace .\workspace
+cargo run --bin learnBusiness -- inspect-trace --workspace .\workspace --trace <trace_id>
+```
+
+新增轻量文件类型：`.csv`、`.tsv`、`.json`、`.html`、`.htm`、`.xml`、`.yaml`、`.yml`、`.xlsx`。其中 XLSX 会抽取共享字符串、inline 字符串和数值，并写入 `kind=table` 的 chunk。复杂 OCR、扫描件版面分析、公式计算和复杂 Office 样式仍属于后续增强方向。

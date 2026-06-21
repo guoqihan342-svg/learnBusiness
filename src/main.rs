@@ -3,12 +3,15 @@ use std::path::PathBuf;
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use learn_business::ai::AiRuntime;
-use learn_business::config::APP_NAME;
+use learn_business::config::{APP_NAME, AppConfig};
 use learn_business::ingest::{IngestOptions, run_ingest_with_options};
 use learn_business::qa::answer_workspace;
 use learn_business::report::report_workspace;
 use learn_business::store::MetadataStore;
 use learn_business::task::{CommandPermissionPolicy, PermissionSet, run_with_permissions};
+use learn_business::trace::{
+    OperationTraceEvent, OperationTraceLogger, hash_text, new_operation_trace_id,
+};
 use learn_business::workspace::Workspace;
 
 #[derive(Debug, Parser)]
@@ -38,6 +41,12 @@ enum Commands {
         workspace: PathBuf,
     },
     InspectAi {
+        #[arg(long)]
+        workspace: PathBuf,
+        #[arg(long)]
+        trace: Option<String>,
+    },
+    InspectTrace {
         #[arg(long)]
         workspace: PathBuf,
         #[arg(long)]
@@ -118,6 +127,11 @@ fn main() -> Result<()> {
                 inspect_ai_command(workspace, trace)
             })?;
         }
+        Commands::InspectTrace { workspace, trace } => {
+            run_with_permissions(&CommandPermissionPolicy::inspect_trace(), &grants, || {
+                inspect_trace_command(workspace, trace)
+            })?;
+        }
         Commands::Report { workspace, out } => {
             run_with_permissions(&CommandPermissionPolicy::report(), &grants, || {
                 report_workspace(&workspace, &out)?;
@@ -132,6 +146,15 @@ fn main() -> Result<()> {
             run_with_permissions(&CommandPermissionPolicy::ask(), &grants, || {
                 let answer = answer_workspace(&workspace, &question)?;
                 println!("{}", answer.answer);
+                if !answer.reasoning_steps.is_empty() || answer.trace_id.is_some() {
+                    println!("推算过程:");
+                    if let Some(trace_id) = answer.trace_id.as_deref() {
+                        println!("- trace_id={trace_id}");
+                    }
+                    for step in &answer.reasoning_steps {
+                        println!("- {} status={} {}", step.step, step.status, step.detail);
+                    }
+                }
                 if !answer.citations.is_empty() {
                     println!("来源:");
                     for citation in answer.citations {
@@ -181,8 +204,21 @@ fn main() -> Result<()> {
 
 fn search_command(workspace_root: PathBuf, query: &str, limit: usize) -> Result<()> {
     let workspace = Workspace::open(workspace_root);
+    let config = AppConfig::load_or_default(workspace.config_path())?;
+    let query_hash = hash_text(query);
+    let trace_id = new_operation_trace_id("search", &query_hash);
+    let logger = OperationTraceLogger::new(
+        workspace.operation_trace_log_path(),
+        config.logging.trace_enabled,
+    );
     let store = MetadataStore::open(workspace.metadata_db_path())?;
     let results = store.search_text(query, limit)?;
+    let mut event =
+        OperationTraceEvent::new(&trace_id, "search", "store", "search_text", "completed");
+    event.input_hash = Some(query_hash);
+    event.result_count = Some(results.len());
+    event.message = Some(format!("limit={limit}"));
+    logger.append(&event)?;
     if results.is_empty() {
         println!("没有检索命中。");
         return Ok(());
@@ -277,6 +313,52 @@ fn inspect_ai_command(workspace_root: PathBuf, trace: Option<String>) -> Result<
             call.redaction_applied,
             call.token_estimate.unwrap_or(0),
             call.error_category.as_deref().unwrap_or("-")
+        );
+    }
+    Ok(())
+}
+
+fn inspect_trace_command(workspace_root: PathBuf, trace: Option<String>) -> Result<()> {
+    let workspace = Workspace::open(workspace_root);
+    let config = AppConfig::load_or_default(workspace.config_path())?;
+    let logger = OperationTraceLogger::new(
+        workspace.operation_trace_log_path(),
+        config.logging.trace_enabled,
+    );
+    let events = logger.read(trace.as_deref())?;
+    if events.is_empty() {
+        println!("没有步骤日志记录。");
+        return Ok(());
+    }
+
+    for event in events {
+        println!(
+            "trace_id={} operation={} component={} step={} status={} input_hash={} output_hash={} result_count={} token_estimate={} redaction={} elapsed_ms={} error_category={} message={}",
+            event.trace_id,
+            event.operation,
+            event.component,
+            event.step,
+            event.status,
+            event.input_hash.as_deref().unwrap_or("-"),
+            event.output_hash.as_deref().unwrap_or("-"),
+            event
+                .result_count
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "-".to_string()),
+            event
+                .token_estimate
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "-".to_string()),
+            event
+                .redaction_applied
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "-".to_string()),
+            event
+                .elapsed_ms
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "-".to_string()),
+            event.error_category.as_deref().unwrap_or("-"),
+            event.message.as_deref().unwrap_or("-")
         );
     }
     Ok(())

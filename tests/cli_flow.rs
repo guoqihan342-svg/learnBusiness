@@ -1,4 +1,5 @@
 use assert_cmd::Command;
+use predicates::prelude::PredicateBooleanExt;
 
 #[test]
 fn prints_help_with_core_commands() {
@@ -554,4 +555,214 @@ api_key_env = \"LEARNBUSINESS_MISSING_API_KEY\"
         .stdout(predicates::str::contains("status=failed"))
         .stdout(predicates::str::contains("error_category=api_key_missing"))
         .stdout(predicates::str::contains("output_hash=-"));
+}
+
+#[test]
+fn ask_outputs_reasoning_process_and_operation_trace() {
+    let workspace = tempfile::tempdir().unwrap();
+    let docs = tempfile::tempdir().unwrap();
+    std::fs::write(
+        docs.path().join("approval.txt"),
+        "approval workflow requires reviewer confirmation",
+    )
+    .unwrap();
+
+    Command::cargo_bin("learnBusiness")
+        .unwrap()
+        .args(["init", workspace.path().to_str().unwrap()])
+        .assert()
+        .success();
+    Command::cargo_bin("learnBusiness")
+        .unwrap()
+        .args([
+            "ingest",
+            docs.path().to_str().unwrap(),
+            "--workspace",
+            workspace.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let output = Command::cargo_bin("learnBusiness")
+        .unwrap()
+        .args([
+            "ask",
+            "--workspace",
+            workspace.path().to_str().unwrap(),
+            "approval workflow",
+        ])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains("推算过程"));
+    assert!(stdout.contains("local_search"));
+    assert!(stdout.contains("context_selection"));
+    assert!(stdout.contains("ai_call"));
+    assert!(stdout.contains("citation_binding"));
+    assert!(stdout.contains("trace_id="));
+
+    let trace_id = stdout
+        .lines()
+        .find_map(|line| {
+            line.split_whitespace()
+                .find_map(|part| part.strip_prefix("trace_id="))
+        })
+        .unwrap()
+        .to_string();
+
+    Command::cargo_bin("learnBusiness")
+        .unwrap()
+        .args([
+            "inspect-trace",
+            "--workspace",
+            workspace.path().to_str().unwrap(),
+            "--trace",
+            &trace_id,
+        ])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains(format!("trace_id={trace_id}")))
+        .stdout(predicates::str::contains("operation=ask"))
+        .stdout(predicates::str::contains("step=local_search"));
+}
+
+#[test]
+fn search_writes_operation_trace_without_ai_call() {
+    let workspace = tempfile::tempdir().unwrap();
+    let docs = tempfile::tempdir().unwrap();
+    std::fs::write(docs.path().join("policy.txt"), "approval policy").unwrap();
+
+    Command::cargo_bin("learnBusiness")
+        .unwrap()
+        .args(["init", workspace.path().to_str().unwrap()])
+        .assert()
+        .success();
+    Command::cargo_bin("learnBusiness")
+        .unwrap()
+        .args([
+            "ingest",
+            docs.path().to_str().unwrap(),
+            "--workspace",
+            workspace.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+    Command::cargo_bin("learnBusiness")
+        .unwrap()
+        .args([
+            "search",
+            "--workspace",
+            workspace.path().to_str().unwrap(),
+            "approval",
+        ])
+        .assert()
+        .success();
+
+    Command::cargo_bin("learnBusiness")
+        .unwrap()
+        .args([
+            "inspect-ai",
+            "--workspace",
+            workspace.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("没有 AI 调用记录"));
+
+    Command::cargo_bin("learnBusiness")
+        .unwrap()
+        .args([
+            "inspect-trace",
+            "--workspace",
+            workspace.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("operation=search"))
+        .stdout(predicates::str::contains("step=search_text"))
+        .stdout(predicates::str::contains("result_count=1"));
+}
+
+#[test]
+fn ingest_writes_operation_trace_without_raw_document_text() {
+    let workspace = tempfile::tempdir().unwrap();
+    let docs = tempfile::tempdir().unwrap();
+    std::fs::write(
+        docs.path().join("sensitive.txt"),
+        "approval secret@example.com 13800138000 sk-live-secret",
+    )
+    .unwrap();
+
+    Command::cargo_bin("learnBusiness")
+        .unwrap()
+        .args(["init", workspace.path().to_str().unwrap()])
+        .assert()
+        .success();
+    Command::cargo_bin("learnBusiness")
+        .unwrap()
+        .args([
+            "ingest",
+            docs.path().to_str().unwrap(),
+            "--workspace",
+            workspace.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    Command::cargo_bin("learnBusiness")
+        .unwrap()
+        .args([
+            "inspect-trace",
+            "--workspace",
+            workspace.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("operation=ingest"))
+        .stdout(predicates::str::contains("step=discover_documents"))
+        .stdout(predicates::str::contains("step=extract_document"))
+        .stdout(predicates::str::contains("step=write_index"))
+        .stdout(predicates::str::contains("result_count=1"))
+        .stdout(predicates::str::contains("secret@example.com").not())
+        .stdout(predicates::str::contains("13800138000").not())
+        .stdout(predicates::str::contains("sk-live-secret").not());
+}
+
+#[test]
+fn describe_image_dry_run_writes_operation_trace() {
+    let workspace = tempfile::tempdir().unwrap();
+    let image_dir = tempfile::tempdir().unwrap();
+    let image = image_dir.path().join("diagram.png");
+    std::fs::write(&image, b"not a real png but enough for hashing").unwrap();
+
+    Command::cargo_bin("learnBusiness")
+        .unwrap()
+        .args(["init", workspace.path().to_str().unwrap()])
+        .assert()
+        .success();
+    Command::cargo_bin("learnBusiness")
+        .unwrap()
+        .args([
+            "describe-image",
+            image.to_str().unwrap(),
+            "--workspace",
+            workspace.path().to_str().unwrap(),
+            "--dry-run-ai",
+        ])
+        .assert()
+        .success();
+
+    Command::cargo_bin("learnBusiness")
+        .unwrap()
+        .args([
+            "inspect-trace",
+            "--workspace",
+            workspace.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("operation=describe-image"))
+        .stdout(predicates::str::contains("step=ai_call"))
+        .stdout(predicates::str::contains("status=dry_run"));
 }

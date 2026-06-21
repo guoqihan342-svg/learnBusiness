@@ -267,7 +267,24 @@ trace_enabled = true
 - `[safety].redact_before_external_ai`：远程 HTTP AI 调用前是否脱敏。
 - `[performance].context_chunks`：问答 top-k chunk 数量，运行时限制在 1 到 20。
 - `[performance].chunk_char_limit`：发送给 provider 前的单 chunk 字符上限。
-- `[logging].trace_enabled`：是否写入 `.learnBusiness/logs/trace.jsonl`。
+- `[logging].trace_enabled`：是否写入 `.learnBusiness/logs/trace.jsonl` 和 `.learnBusiness/logs/operations.jsonl`。
+
+## 推算过程与步骤日志
+
+`ask` 会输出“推算过程”块，展示本地检索、上下文选择、脱敏判断、AI 调用和引用绑定。这里展示的是外部可验证的运行证据，不是模型隐藏思维链；它不会额外调用 AI，也不会增加发送给 provider 的正文。
+
+查看步骤日志：
+
+```powershell
+cargo run --bin learnBusiness -- inspect-trace --workspace .\workspace
+cargo run --bin learnBusiness -- inspect-trace --workspace .\workspace --trace <trace_id>
+```
+
+步骤日志路径为 `.learnBusiness/logs/operations.jsonl`。它记录 trace id、operation、component、step、status、input/output hash、命中数量、token 估算、耗时和错误分类，不记录完整 prompt、业务正文、图片 base64、请求头值或 API key。
+
+## 新增文件类型
+
+`ingest` 额外识别并抽取 `.csv`、`.tsv`、`.json`、`.html`、`.htm`、`.xml`、`.yaml`、`.yml`、`.xlsx`。其中 XLSX 会抽取共享字符串、inline 字符串和数值，生成 `kind=table` chunk。
 
 ## 通用 HTTP Provider
 

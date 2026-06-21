@@ -22,9 +22,10 @@
     extraction/
   logs/
     trace.jsonl
+    operations.jsonl
 ```
 
-`.learnBusiness/config/app.toml` 是运行时配置入口。配置包含 AI provider、HTTP `base_url`、模型名、请求头、脱敏开关、问答上下文数量、chunk 长度上限和 trace 开关。
+`.learnBusiness/config/app.toml` 是运行时配置入口。配置包含 AI provider、HTTP `base_url`、模型名、请求头、脱敏开关、问答上下文数量、chunk 长度上限、AI trace 和 operation trace 开关。
 
 配置文件不应保存真实密钥值。推荐在 `[ai.headers]` 中保存环境变量占位符，例如：
 
@@ -124,7 +125,7 @@ X-App = "learnBusiness"
 trace_enabled = false
 ```
 
-关闭后不会创建或追加 `trace.jsonl`，但 SQLite `ai_calls` 审计仍会写入。
+关闭后不会创建或追加 `trace.jsonl` 和 `operations.jsonl`，但 SQLite `ai_calls` 审计仍会写入。
 
 ## AI Cache
 
@@ -170,6 +171,27 @@ chunk_char_limit = 1600
 [logging]
 trace_enabled = true
 ```
+
+## Operation Trace 数据
+
+`.learnBusiness/logs/operations.jsonl` 保存命令级步骤日志，每行一条 JSON 事件。它用于定位 `ingest`、`search`、`ask` 和 `describe-image` 的运行路径，和 AI 调用日志 `.learnBusiness/logs/trace.jsonl` 互补。
+
+主要字段包括：
+
+- `trace_id`：一次操作的关联标识。
+- `operation`：命令或操作名，例如 `ingest`、`search`、`ask`。
+- `component`：组件名，例如 `store`、`AiRuntime`。
+- `step`：步骤名，例如 `local_search`、`write_index`。
+- `status`：`started`、`completed`、`failed`、`skipped`、`dry_run` 等状态。
+- `input_hash` / `output_hash`：输入和输出 hash，不保存原文。
+- `result_count`：命中或写入数量。
+- `token_estimate`：token 估算值。
+- `redaction_applied`：是否脱敏。
+- `error_category`：错误分类。
+- `elapsed_ms`：步骤耗时。
+- `message`：只允许写入数量、limit、状态等安全短摘要。
+
+禁止写入的数据包括完整 prompt、完整业务正文、chunk 正文、图片 base64、HTTP 请求头真实值、API key、token、provider 完整请求体或完整响应体。
 
 `provider = "http"` 后，问答、embedding 和多模态图片请求都使用同一个 `base_url` 和同一套 `[ai.headers]`。`api_key_env` 仅作为兼容快捷方式，不建议再新增只依赖它的配置。
 

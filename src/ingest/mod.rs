@@ -6,11 +6,12 @@ use anyhow::Result;
 use sha2::{Digest, Sha256};
 
 use crate::ai::AiRuntime;
-use crate::config::DEFAULT_CHUNK_CHAR_LIMIT;
+use crate::config::{AppConfig, DEFAULT_CHUNK_CHAR_LIMIT};
 use crate::discover::{DiscoveredDocument, discover_documents};
 use crate::ingest::extract::{ExtractedChunk, extract_document_text};
 use crate::models::{Chunk, ChunkKind};
 use crate::store::{ChunkInsert, DocumentRecord, MetadataStore};
+use crate::trace::{OperationTraceEvent, OperationTraceLogger, new_operation_trace_id};
 use crate::workspace::Workspace;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -39,14 +40,39 @@ pub fn run_ingest_with_options(
     docs_dir: impl AsRef<Path>,
     options: IngestOptions,
 ) -> Result<IngestSummary> {
+    let docs_dir = docs_dir.as_ref();
     let workspace = Workspace::open(workspace_root);
+    let config = AppConfig::load_or_default(workspace.config_path())?;
+    let trace_id = new_operation_trace_id("ingest", &sha256_text(&docs_dir.to_string_lossy()));
+    let logger = OperationTraceLogger::new(
+        workspace.operation_trace_log_path(),
+        config.logging.trace_enabled,
+    );
     let store = MetadataStore::open(workspace.metadata_db_path())?;
     let runtime = if options.describe_images {
         Some(AiRuntime::open(workspace.root())?)
     } else {
         None
     };
+    let mut discover_event = OperationTraceEvent::new(
+        &trace_id,
+        "ingest",
+        "discover",
+        "discover_documents",
+        "started",
+    );
+    discover_event.input_hash = Some(sha256_text(&docs_dir.to_string_lossy()));
+    logger.append(&discover_event)?;
     let documents = discover_documents(docs_dir)?;
+    let mut discover_done = OperationTraceEvent::new(
+        &trace_id,
+        "ingest",
+        "discover",
+        "discover_documents",
+        "completed",
+    );
+    discover_done.result_count = Some(documents.len());
+    logger.append(&discover_done)?;
     let mut summary = IngestSummary {
         scanned: documents.len(),
         ..IngestSummary::default()
@@ -55,17 +81,55 @@ pub fn run_ingest_with_options(
     for document in documents {
         match ingest_one(&store, &document, runtime.as_ref(), options) {
             Ok(indexed) => {
+                let mut extract_event = OperationTraceEvent::new(
+                    &trace_id,
+                    "ingest",
+                    "extract",
+                    "extract_document",
+                    if indexed { "completed" } else { "skipped" },
+                );
+                extract_event.input_hash = Some(document.sha256.clone());
+                logger.append(&extract_event)?;
                 if indexed {
+                    let mut write_event = OperationTraceEvent::new(
+                        &trace_id,
+                        "ingest",
+                        "store",
+                        "write_index",
+                        "completed",
+                    );
+                    write_event.input_hash = Some(document.sha256.clone());
+                    write_event.result_count = Some(1);
+                    logger.append(&write_event)?;
                     summary.indexed += 1;
                 } else {
                     summary.skipped += 1;
                 }
             }
             Err(_) => {
+                let mut failed_event = OperationTraceEvent::new(
+                    &trace_id,
+                    "ingest",
+                    "extract",
+                    "extract_document",
+                    "failed",
+                );
+                failed_event.input_hash = Some(document.sha256);
+                failed_event.error_category = Some("ingest_failed".to_string());
+                logger.append(&failed_event)?;
                 summary.warnings += 1;
             }
         }
     }
+
+    let mut completed =
+        OperationTraceEvent::new(&trace_id, "ingest", "ingest", "summary", "completed");
+    completed.result_count = Some(summary.indexed);
+    completed.message = Some(format!(
+        "scanned={} indexed={} skipped={} warnings={}",
+        summary.scanned, summary.indexed, summary.skipped, summary.warnings
+    ));
+    logger.append(&completed)?;
 
     Ok(summary)
 }
@@ -142,6 +206,7 @@ fn ingest_one(
 
     let chunks = if extracted.chunks.is_empty() {
         vec![ExtractedChunk {
+            kind: Some(ChunkKind::Text),
             text: extracted.text,
             page: None,
             slide: None,
@@ -158,10 +223,11 @@ fn ingest_one(
     for chunk in chunks {
         for text in split_text_chunks(&chunk.text, DEFAULT_CHUNK_CHAR_LIMIT) {
             chunk_number += 1;
+            let chunk_kind = chunk.kind.unwrap_or(ChunkKind::Text);
             let chunk_hash = sha256_text(&text);
             let chunk_id = Chunk::stable_id(
                 &document_id,
-                ChunkKind::Text,
+                chunk_kind,
                 Some(chunk.page.unwrap_or(chunk_number)),
                 chunk.slide,
                 &chunk_hash,
@@ -173,7 +239,7 @@ fn ingest_one(
             store.insert_chunk_with_metadata(ChunkInsert {
                 id: &chunk_id,
                 document_id: &document_id,
-                kind: "text",
+                kind: chunk_kind.as_str(),
                 text: &text,
                 page: chunk.page,
                 slide: chunk.slide,
@@ -397,6 +463,97 @@ mod tests {
         let results = store.search_text("风险控制", 5).unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].slide, Some(2));
+    }
+
+    #[test]
+    fn structured_and_xlsx_ingest_indexes_searchable_chunks() {
+        let workspace = tempfile::tempdir().unwrap();
+        let docs = tempfile::tempdir().unwrap();
+        std::fs::write(
+            docs.path().join("customers.csv"),
+            "customer,status\nAcme,approved",
+        )
+        .unwrap();
+        std::fs::write(
+            docs.path().join("policy.json"),
+            r#"{"workflow":"renewal","owner":"operations"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            docs.path().join("page.html"),
+            "<html><body><p>Portal submission</p></body></html>",
+        )
+        .unwrap();
+        std::fs::write(
+            docs.path().join("config.yaml"),
+            "role: reviewer\nstate: pending",
+        )
+        .unwrap();
+        write_zip_entries(
+            &docs.path().join("book.xlsx"),
+            &[
+                (
+                    "xl/sharedStrings.xml",
+                    r#"
+                    <sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+                      <si><t>invoice_id</t></si>
+                      <si><t>INV-2026</t></si>
+                    </sst>
+                    "#,
+                ),
+                (
+                    "xl/worksheets/sheet1.xml",
+                    r#"
+                    <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+                      <sheetData>
+                        <row><c t="s"><v>0</v></c><c t="s"><v>1</v></c></row>
+                      </sheetData>
+                    </worksheet>
+                    "#,
+                ),
+            ],
+        );
+
+        let summary = run_ingest(workspace.path(), docs.path()).unwrap();
+        assert_eq!(summary.indexed, 5);
+
+        let store =
+            MetadataStore::open(Workspace::open(workspace.path()).metadata_db_path()).unwrap();
+        assert!(
+            store
+                .search_text("Acme", 5)
+                .unwrap()
+                .iter()
+                .any(|result| result.document_path.ends_with("customers.csv"))
+        );
+        assert!(
+            store
+                .search_text("renewal", 5)
+                .unwrap()
+                .iter()
+                .any(|result| result.document_path.ends_with("policy.json"))
+        );
+        assert!(
+            store
+                .search_text("Portal", 5)
+                .unwrap()
+                .iter()
+                .any(|result| result.document_path.ends_with("page.html"))
+        );
+        assert!(
+            store
+                .search_text("reviewer", 5)
+                .unwrap()
+                .iter()
+                .any(|result| result.document_path.ends_with("config.yaml"))
+        );
+        let xlsx_results = store.search_text("INV-2026", 5).unwrap();
+        assert!(
+            xlsx_results
+                .iter()
+                .any(|result| result.document_path.ends_with("book.xlsx")
+                    && result.kind == "table")
+        );
     }
 
     fn write_zip_entries(path: &Path, entries: &[(&str, &str)]) {
